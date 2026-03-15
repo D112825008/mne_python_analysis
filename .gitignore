@@ -1,0 +1,22 @@
+﻿# EEG 資料檔
+sample/
+*.cnt
+*.cdt
+*.fif
+*.set
+*.dat
+*.h5
+
+# 結果資料夾
+Result/
+ersp_results/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# 系統檔
+.DS_Store
+Thumbs.db
