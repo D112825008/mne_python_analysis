@@ -106,7 +106,7 @@ def asrt_testing_phase_topomap(epochs, subject_id):
         print(f"  - Baseline: {baseline_tmin*1000:.0f}-{baseline_tmax*1000:.0f} ms")
     else:
         task_tmin, task_tmax = -0.3, 0.05
-        baseline_tmin, baseline_tmax = -1.1, -0.6
+        baseline_tmin, baseline_tmax = -1.0, -0.6
         print(f"\n  - 分析窗口: {task_tmin*1000:.0f}-{task_tmax*1000:.0f} ms")
         print(f"  - Baseline: {baseline_tmin*1000:.0f}-{baseline_tmax*1000:.0f} ms")
     

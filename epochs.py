@@ -246,8 +246,8 @@ def epoch_data_asrt(raw, subject_id):
     print("   - tmin=-0.8s, tmax=1.0s")
     print("   - baseline=(-0.5, -0.1)")
     print("\n2. Response-locked (按鍵反應時)")
-    print("   - tmin=-1.1s, tmax=0.5s")
-    print("   - baseline=(-1.1, -0.6)")
+    print("   - tmin=-1.0s, tmax=0.5s")
+    print("   - baseline=(-1.0, -0.6)")
     print("\n3. 兩者都建立 (推薦)")  # ← 新增
     print("   - 同時建立 Stimulus-locked 和 Response-locked")  # ← 新增
     print("   - 可用於完整的 ASRT 分析流程")  # ← 新增
@@ -446,8 +446,8 @@ def epoch_data_asrt(raw, subject_id):
         print("\n【2/2】建立 Response-locked Epochs...")
         
         resp_event_codes = RANDOM_RESP + REGULAR_RESP
-        resp_tmin, resp_tmax = -1.1, 0.5
-        resp_baseline = (-1.1, -0.6)
+        resp_tmin, resp_tmax = -1.0, 0.5
+        resp_baseline = (-1.0, -0.6)
         
         # 篩選 Response events 並建立 metadata
         resp_filtered_events = []
@@ -583,7 +583,7 @@ def epoch_data_asrt(raw, subject_id):
             # Response-locked
             used_event_codes = RANDOM_RESP + REGULAR_RESP
             tmin, tmax = -1.1, 0.5
-            baseline = (-1.1, -0.6)
+            baseline = (-1.0, -0.6)
             epoch_type = "Response"
         
         # === 步驟 6: 單一迴圈，同時產生 filtered_events + metadata（確保數量一致） ===
@@ -948,7 +948,7 @@ def create_stimulus_locked_epochs(raw, events, event_id, tmin=-0.8, tmax=1.0,
 
 
 def create_response_locked_epochs(raw, events, response_times, event_id, 
-                                  tmin=-1.1, tmax=0.5, baseline=(-1.1, -0.6),
+                                  tmin=-1.1, tmax=0.5, baseline=(-1.0, -0.6),
                                   preload=True):
     """
     創建 Response-locked epochs

@@ -939,7 +939,7 @@ def asrt_wholebrain_fft_analysis(epochs, subject_id):
     else:
         epoch_type = "Response"
         task_tmin, task_tmax = -0.3, 0.05
-        baseline_tmin, baseline_tmax = -1.1, -0.6
+        baseline_tmin, baseline_tmax = -1.0, -0.6
     
     print(f"  - Epoch 類型: {epoch_type}-locked")
     print(f"  - 分析窗口: {task_tmin*1000:.0f}-{task_tmax*1000:.0f} ms")

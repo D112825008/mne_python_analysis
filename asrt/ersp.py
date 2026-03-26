@@ -145,7 +145,7 @@ def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir
         baseline_window = (-0.5, -0.1)
         epoch_type = "Stimulus-locked"
     else:
-        baseline_window = (-1.1, -0.6)
+        baseline_window = (-1.0, -0.6)
         epoch_type = "Response-locked"
 
     print(f"\n{'='*60}")
