@@ -161,8 +161,12 @@ def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir
 
     # === 3. 定義 ROI ===
     roi_groups = {
-        'Theta': ['Fz', 'FCz', 'Cz', 'C3', 'C4'],
-        'Alpha': ['O1', 'Oz', 'O2', 'P3', 'Pz', 'P4']
+        'Motor':                ['Fz', 'FCz', 'Cz', 'C3', 'C4'],
+        'Motor_Frontal':        ['Fz', 'FCz'],
+        'Motor_Central':        ['Cz', 'C3', 'C4'],
+        'Perceptual':           ['O1', 'Oz', 'O2', 'P3', 'Pz', 'P4'],
+        'Perceptual_Parietal':  ['P3', 'Pz', 'P4'],
+        'Perceptual_Occipital': ['O1', 'Oz', 'O2'],
     }
     available_groups = {}
     for roi_name, channels in roi_groups.items():

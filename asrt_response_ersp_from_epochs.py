@@ -10,8 +10,12 @@ import mne
 
 # ROI 定義（與 asrt/ersp.py 一致）
 _ROI_GROUPS = {
-    'Theta': ['Fz', 'FCz', 'Cz', 'C3', 'C4'],
-    'Alpha': ['O1', 'Oz', 'O2', 'P3', 'Pz', 'P4'],
+    'Motor':                ['Fz', 'FCz', 'Cz', 'C3', 'C4'],
+    'Motor_Frontal':        ['Fz', 'FCz'],
+    'Motor_Central':        ['Cz', 'C3', 'C4'],
+    'Perceptual':           ['O1', 'Oz', 'O2', 'P3', 'Pz', 'P4'],
+    'Perceptual_Parietal':  ['P3', 'Pz', 'P4'],
+    'Perceptual_Occipital': ['O1', 'Oz', 'O2'],
 }
 
 
