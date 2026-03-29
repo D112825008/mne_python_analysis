@@ -250,7 +250,67 @@ def add_rt_to_epochs_from_behavioral(epochs, behavioral_csv, overwrite=False):
     print(f"\n✓ RT 已成功加入 epochs.metadata")
     print(f"  匹配率: {match_rate*100:.1f}%")
     print(f"  有效 RT: {np.sum(~np.isnan(rt_array))}/{len(epochs)}")
-    
+
+    # === RT 分組統計 ===
+    meta = epochs.metadata.copy()
+    meta['rt_ms'] = meta['rt'] * 1000
+
+    def _rt_stats(df_group, label):
+        valid = df_group['rt_ms'].dropna()
+        if len(valid) == 0:
+            print(f"    {label}: 無有效 RT")
+            return
+        over600 = (valid > 600).sum()
+        pct600 = over600 / len(valid) * 100
+        warn = " ⚠️  baseline 可能有風險" if pct600 > 0 else ""
+        print(f"    {label}: n={len(valid)}  "
+              f"{valid.min():.0f}–{valid.max():.0f} ms  "
+              f"mean={valid.mean():.0f} ms  "
+              f"RT>600ms: {over600}({pct600:.1f}%){warn}")
+
+    print(f"\n{'─'*70}")
+    print("RT 分組統計")
+    print(f"{'─'*70}")
+
+    # --- Learning ---
+    learning_groups = [
+        ("Block 7–11",  range(7,  12)),
+        ("Block 12–16", range(12, 17)),
+        ("Block 17–21", range(17, 22)),
+        ("Block 22–26", range(22, 27)),
+    ]
+    print("\n[Learning]")
+    for label, blocks in learning_groups:
+        subset = meta[meta['block'].isin(blocks)]
+        _rt_stats(subset, label)
+
+    # --- Testing ---
+    for test_type_label, test_type_val in [("Testing Motor", "motor"), ("Testing Perceptual", "perceptual")]:
+        print(f"\n[{test_type_label}]")
+        # 找出屬於此 test_type 的 block，排序後分前後兩對
+        col_mask = meta['test_type'].str.lower() == test_type_val.lower() if 'test_type' in meta.columns else pd.Series(False, index=meta.index)
+        type_blocks = sorted(meta.loc[col_mask, 'block'].dropna().unique().astype(int))
+        if len(type_blocks) >= 4:
+            pair1_blocks = type_blocks[:2]
+            pair2_blocks = type_blocks[2:4]
+        elif len(type_blocks) == 2:
+            pair1_blocks = [type_blocks[0]]
+            pair2_blocks = [type_blocks[1]]
+        else:
+            pair1_blocks = type_blocks
+            pair2_blocks = []
+
+        if pair1_blocks:
+            _rt_stats(meta[meta['block'].isin(pair1_blocks)],
+                      f"Pair-1 (Block {pair1_blocks[0]}–{pair1_blocks[-1]})")
+        if pair2_blocks:
+            _rt_stats(meta[meta['block'].isin(pair2_blocks)],
+                      f"Pair-2 (Block {pair2_blocks[0]}–{pair2_blocks[-1]})")
+        if not pair1_blocks and not pair2_blocks:
+            print("    （無對應 block）")
+
+    print(f"{'─'*70}")
+
     return epochs, True
 
 

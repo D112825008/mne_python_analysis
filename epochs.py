@@ -446,8 +446,8 @@ def epoch_data_asrt(raw, subject_id):
         print("\n【2/2】建立 Response-locked Epochs...")
         
         resp_event_codes = RANDOM_RESP + REGULAR_RESP
-        resp_tmin, resp_tmax = -1.0, 0.5
-        resp_baseline = (-1.0, -0.6)
+        resp_tmin, resp_tmax = -1.5, 0.2
+        resp_baseline = None
         
         # 篩選 Response events 並建立 metadata
         resp_filtered_events = []
@@ -526,7 +526,7 @@ def epoch_data_asrt(raw, subject_id):
         
         print(f"\nResponse-locked:")
         print(f"  - 時間窗口: {resp_tmin} ~ {resp_tmax} s")
-        print(f"  - Baseline: {resp_baseline}")
+        print(f"  - Baseline: None (per-trial baseline applied in ERSP step)")
         print(f"  - Epochs: {len(epochs_resp)}")
         print(f"  - Random: {len(resp_metadata_df[resp_metadata_df['trial_type']=='Random'])}")
         print(f"  - Regular: {len(resp_metadata_df[resp_metadata_df['trial_type']=='Regular'])}")

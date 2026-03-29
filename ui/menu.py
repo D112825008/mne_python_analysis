@@ -64,50 +64,41 @@ def show_main_menu(has_raw=True, has_epochs=False, asrt_available=True):
     """
     print("\n請選擇要執行的操作:")
     print("\n 提示：建議先執行標準前處理流程，再進行 ASRT 分析\n")
-    
+
     print("【檢視資料】")
     print("  1. 顯示原始 EEG 波形")
     print("  2. 顯示電極位置圖")
     print("  3. 顯示功率頻譜圖 (PSD)")
     print("  4. 互動式標記壞段落")
-    
+
     print("\n【標準前處理流程】")
-    print("  5. 執行標準前處理流程 (互動式參數)")
-    
+    print("  5. 執行標準前處理流程")
+
     print("\n【進階分析】")
-    print(" 6. 執行 ICA 分析")
-    print(" 7. 準備 Microstate 分析")
-    
-    print("\n【Epochs 分析】")
-    print(" 8. 建立 Epochs (互動式參數)")
-    print(" 10. 顯示 Epochs")
-    print(" 11. 計算 PSD (Epochs)")
-    print(" 12. 計算時頻分析 (TFR)")
-    
+    print("  6. 執行 ICA 分析")
+    print("  7. 建立 Epochs (互動式參數)")
+    print("  8. 顯示 Epochs")
+    print("  9. 計算 PSD (Epochs)")
+    print(" 10. 計算時頻分析 (TFR)")
+    print(" 11. 準備 Microstate 分析")
+
+    print("\n【儲存與其他】")
+    print(" 12. 存檔 (Raw)")
+    print(" 13. 存檔 (Epochs)")
+    print(" 14. 顯示處理歷程")
+
     if asrt_available:
         print("\n【ASRT 實驗分析】")
-        print(" 13. ASRT 完整分析 (Stimulus + Response Lock)")
-        print("     → Stimulus Lock: Alpha (200-400ms)")
-        print("     → Response Lock: Theta (-300~+50ms)")
-        print("     → 排除: HEOG/VEOG/A1/A2")
-        print(" 14. ASRT ROI 頻譜分析 (需先建立 Epochs)")
-        print(" 15. ASRT Block 比較分析 (需先建立 Epochs)")
-        print(" 16. ASRT 群體分析 (Group-level ERSP)")
-        print(" 20. 輔助：把 RT 加入當前 Epochs (精確對齊)")
-        print("     → 根據 block 和 trial 從行為資料精確提取 RT")
-        print("     → 100% 準確匹配")
-        print(" 21. Response ERSP (Stimulus 對齊 + 整段平均 baseline)")
-        print("     → Time domain: Stimulus → Response 對齊")
-        print("     → Frequency domain: 整段 epoch 平均 baseline")
+        print(" 15. Stimulus ERSP")
+        print(" 16. 輔助：把 RT 加入當前 Epochs (精確對齊)")
+        print(" 17. Response ERSP (per-trial logratio baseline)")
+        print(" 18. ASRT 群體分析 (Group-level ERSP)")
+        print(" 19. ASRT ROI 頻譜分析")
+        print(" 20. ASRT Block 比較分析")
 
-    
-    print("\n【儲存與退出】")
-    print(" 17. 存檔 (Raw)")
-    print(" 18. 存檔 (Epochs)")
-    print(" 19. 顯示處理歷程")
-    print("  0. 返回主選單")
-    
-    choice = input("\n請輸入選項 (0-21): ").strip()
+    print("\n  0. 返回主選單")
+
+    choice = input("\n請輸入選項 (0-20): ").strip()
     return choice
 
 

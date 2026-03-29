@@ -556,15 +556,15 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
             except Exception as e:
                 print(f"ICA 分析時發生錯誤: {str(e)}")
         
-        elif choice == '7':
+        elif choice == '11':
             try:
                 raw_ms = prepare_microstate_analysis(current_raw, subject_id)
                 processing_history.append("Microstate 準備")
             except Exception as e:
                 print(f"Microstate 處理時發生錯誤: {str(e)}")
-        
-        # === Epochs 分析 (選項 8-12) ===
-        elif choice == '8':
+
+        # === Epochs 分析 (選項 7-10) ===
+        elif choice == '7':
             try:
                 epochs_result = create_epochs_interactive(current_raw, subject_id)
                 if epochs_result[0] is not None:
@@ -699,8 +699,8 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                                     print("="*60)
                                     print(f"兩個 epochs 都保留 {len(epochs_resp_clean)} 個對應的 trials")
                                     print("可以用於後續分析：")
-                                    print(f"  - {stim_fname} → 選項 13 (Stimulus ERSP)")
-                                    print(f"  - {resp_fname} → 選項 20-21 (Response ERSP)")
+                                    print(f"  - {stim_fname} → 選項 15 (Stimulus ERSP)")
+                                    print(f"  - {resp_fname} → 選項 16-17 (Response ERSP)")
                                     
                                     # 設定 current_epochs
                                     current_epochs = epochs_resp_clean
@@ -791,22 +791,22 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 import traceback
                 traceback.print_exc()
         
-        elif choice == '10':
+        elif choice == '8':
             display_epochs_plot(current_epochs)
-        
-        elif choice == '11':
+
+        elif choice == '9':
             psd = compute_epochs_psd(current_epochs)
             if psd is not None:
                 processing_history.append("計算 PSD")
-        
-        elif choice == '12':
+
+        elif choice == '10':
             tfr = compute_epochs_tfr(current_epochs)
             if tfr is not None:
                 processing_history.append("計算 TFR")
-        
-        # === ASRT 分析 (選項 13-16) ===
+
+        # === ASRT 分析 (選項 15-20) ===
         # 來源：原 main.py 2161-2424 行
-        elif choice == '13':
+        elif choice == '15':
             # ASRT ERSP 分析
             if current_epochs is None:
                 print("\n⚠️  請先建立 Epochs")
@@ -974,7 +974,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 import traceback
                 traceback.print_exc()
         
-        elif choice == '14':
+        elif choice == '19':
             # ASRT ROI 頻譜分析
             try:
                 result = asrt_roi_spectral_analysis(current_epochs, subject_id)
@@ -986,8 +986,8 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 print(f"ASRT ROI 分析時發生錯誤: {str(e)}")
                 import traceback
                 traceback.print_exc()
-        
-        elif choice == '15':
+
+        elif choice == '20':
             # ASRT Block 比較分析
             try:
                 result = asrt_block_comparison(current_epochs, subject_id)
@@ -1004,8 +1004,8 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 print(f"ASRT Block 分析時發生錯誤: {str(e)}")
                 import traceback
                 traceback.print_exc()
-        
-        elif choice == '16':
+
+        elif choice == '18':
             # ASRT 群體分析 — 全自動跑完所有組合
             try:
                 from mne_python_analysis.group_ersp_analysis import auto_group_ersp_analysis
@@ -1025,8 +1025,8 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 print(f"\n資料來源  : {H5_DIR}")
                 print(f"輸出根目錄: {OUTPUT_DIR}")
                 print("\n⚠  資料前置需求：")
-                print("   Stimulus-locked → 先執行選項 13，分析中選「儲存供群體分析用：y」")
-                print("   Response-locked → 先執行選項 21")
+                print("   Stimulus-locked → 先執行選項 15，分析中選「儲存供群體分析用：y」")
+                print("   Response-locked → 先執行選項 17")
 
                 # 輸入受試者 ID
                 print("\n" + "─"*60)
@@ -1077,7 +1077,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 import traceback
                 traceback.print_exc()
         
-        elif choice == '20':
+        elif choice == '16':
         # 輔助功能：把 RT 加入 epochs metadata（精確對齊）
             import os
             import pandas as pd
@@ -1094,7 +1094,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
             # 檢查 metadata
             if not hasattr(current_epochs, 'metadata') or current_epochs.metadata is None:
                 print("\n✗ Epochs 沒有 metadata")
-                print("  請使用 ASRT 專用 Epochs 建立功能（選項 8）")
+                print("  請使用 ASRT 專用 Epochs 建立功能（選項 7）")
                 continue
             
             metadata = current_epochs.metadata
@@ -1176,16 +1176,16 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 import traceback
                 traceback.print_exc()
         
-        elif choice == '21':
-            # Response ERSP 分析（Stimulus baseline → Response 對齊）
-            
+        elif choice == '17':
+            # Response ERSP 分析（per-trial logratio baseline）
+
             print("\n" + "="*70)
-            print("Response ERSP 分析")
+            print("Response ERSP 分析（per-trial logratio baseline）")
             print("="*70)
             print("\n方法:")
-            print("  1. Time domain: Stimulus baseline correction")
-            print("  2. Time domain: 根據 RT 對齊到 Response 時間軸")
-            print("  3. Frequency domain: 整段 epoch 平均 baseline")
+            print("  1. 逐 trial Morlet wavelet（average=False）")
+            print("  2. 各 trial 以自己的 Blank 靜息期做 logratio baseline")
+            print("  3. 平均所有校正後 trial")
             
             # ===== 檢查前置條件 =====
             if current_epochs is None:
@@ -1200,18 +1200,18 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
             
             if 'rt' not in current_epochs.metadata.columns:
                 print("\n⚠️  Metadata 中沒有 'rt' 欄位")
-                print("  請先執行選項 20 加入 RT")
+                print("  請先執行選項 16 加入 RT")
                 continue
-            
+
             # 檢查 RT 是否有效
             rt_values = current_epochs.metadata['rt'].values
             valid_rt = ~np.isnan(rt_values)
-            
+
             if not np.any(valid_rt):
                 print("\n⚠️  所有 epochs 的 RT 都是 NaN")
-                print("  請檢查選項 20 的執行結果")
+                print("  請檢查選項 16 的執行結果")
                 continue
-            
+
             if not np.all(valid_rt):
                 print(f"\n⚠️  有 {np.sum(~valid_rt)} 個 epochs 缺少 RT")
                 print(f"  將只分析有 RT 的 {np.sum(valid_rt)} 個 epochs")
@@ -1310,15 +1310,13 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 
                 # ===== 執行分析 =====
                 power_response = response_ersp_from_current_epochs(
-                    current_raw=current_raw,
                     response_epochs=current_epochs,
                     freqs=freqs,
                     n_cycles_func=n_cycles_func,
                     decim=decim,
                     n_jobs=n_jobs,
-                    average=True,
                     output_dir=output_dir,
-                    subject_id=subject_id
+                    subject_id=subject_id,
                 )
                 
                 # ===== 繪圖 =====
@@ -1399,15 +1397,15 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 import traceback
                 traceback.print_exc()
         
-        # === 儲存與退出 (選項 17-19, 0) ===
+        # === 儲存與退出 (選項 12-14, 0) ===
         # 來源：原 main.py 2426-2465 行
-        elif choice == '17':
+        elif choice == '12':
             save_raw_interactive(current_raw, subject_id)
-        
-        elif choice == '18':
+
+        elif choice == '13':
             save_epochs_interactive(current_epochs, subject_id)
-        
-        elif choice == '19':
+
+        elif choice == '14':
             display_processing_history(processing_history)
             
             if asrt_results:
