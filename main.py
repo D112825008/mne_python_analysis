@@ -1317,6 +1317,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                     n_jobs=n_jobs,
                     output_dir=output_dir,
                     subject_id=subject_id,
+                    plot_dir=r'C:\Experiment\Result',
                 )
                 
                 # ===== 繪圖 =====

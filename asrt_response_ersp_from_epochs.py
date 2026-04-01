@@ -99,7 +99,7 @@ def _compute_pertrial_ersp(epochs_subset, rt_subset, freqs, n_cycles, decim, n_j
             n_short_baseline += 1
 
         # bl_mean shape: (n_ch, n_freqs, 1)
-        bl_mean = tfr_epochs.data[i, :, :, bl_mask].mean(axis=-1, keepdims=True)
+        bl_mean = tfr_epochs.data[i][:, :, bl_mask].mean(axis=-1, keepdims=True)
         # 避免除以零
         bl_mean = np.where(bl_mean == 0, np.finfo(float).eps, bl_mean)
         corrected[i] = 10.0 * np.log10(tfr_epochs.data[i] / bl_mean)
@@ -107,17 +107,9 @@ def _compute_pertrial_ersp(epochs_subset, rt_subset, freqs, n_cycles, decim, n_j
     if n_short_baseline > 0:
         print(f"{prefix}⚠  {n_short_baseline} trials baseline 窗口太短，已自動擴展")
 
-    # 平均所有 trial
-    avg_data = corrected.mean(axis=0)  # (n_ch, n_freqs, n_times)
-
-    avg_tfr = mne.time_frequency.AverageTFR(
-        info=epochs_subset.info.copy(),
-        data=avg_data,
-        times=times,
-        freqs=freqs,
-        nave=n_epochs,
-        method='morlet',
-    )
+    # 把校正後的資料寫回，再用 .average() 產生 AverageTFR
+    tfr_epochs.data = corrected
+    avg_tfr = tfr_epochs.average()
 
     print(f"{prefix}✓ ERSP 完成（per-trial logratio baseline）")
     return avg_tfr
@@ -131,6 +123,7 @@ def response_ersp_from_current_epochs(
     n_jobs=1,
     output_dir=r'C:\Experiment\Result\h5',
     subject_id=None,
+    plot_dir=None,
 ):
     """
     從當前的 Response epochs 執行逐 trial ERSP 分析。
@@ -330,7 +323,11 @@ def response_ersp_from_current_epochs(
         results['All'] = {'All': power}
 
     # ===== 步驟 3：繪圖 =====
-    if output_dir and subject_id:
+    if plot_dir is None:
+        from pathlib import Path
+        plot_dir = str(Path(output_dir).parent) if output_dir else None
+
+    if plot_dir and subject_id:
         try:
             from asrt.ersp_plots import (
                 plot_ersp_lum2023_style,
@@ -355,7 +352,7 @@ def response_ersp_from_current_epochs(
                     plot_ersp_lum2023_style(
                         pd_,
                         f"{subject_id}_response_{key}_{trial_type}",
-                        output_dir,
+                        plot_dir,
                     )
 
                 if 'Regular' in power_dicts and 'Random' in power_dicts:
@@ -369,7 +366,7 @@ def response_ersp_from_current_epochs(
                              'Random':  power_dicts['Random']},
                             subject_id=subject_id,
                             lock_type='response',
-                            output_dir=output_dir,
+                            output_dir=plot_dir,
                             block_label=group_label,
                         )
                     elif cond_name == 'MotorTest':
@@ -379,7 +376,7 @@ def response_ersp_from_current_epochs(
                             subject_id=subject_id,
                             lock_type='response',
                             test_type='motor',
-                            output_dir=output_dir,
+                            output_dir=plot_dir,
                             block_label=group_label,
                         )
                     elif cond_name == 'PerceptualTest':
@@ -389,7 +386,7 @@ def response_ersp_from_current_epochs(
                             subject_id=subject_id,
                             lock_type='response',
                             test_type='perceptual',
-                            output_dir=output_dir,
+                            output_dir=plot_dir,
                             block_label=group_label,
                         )
 

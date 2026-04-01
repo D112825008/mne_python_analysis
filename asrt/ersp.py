@@ -168,6 +168,7 @@ def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir
         'Perceptual_Parietal':  ['P3', 'Pz', 'P4'],
         'Perceptual_Occipital': ['O1', 'Oz', 'O2'],
     }
+
     available_groups = {}
     for roi_name, channels in roi_groups.items():
         available = [ch for ch in channels if ch in epochs.ch_names]

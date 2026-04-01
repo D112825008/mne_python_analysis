@@ -180,7 +180,7 @@ def plot_learning_comparison(results, subject_id, lock_type, output_dir, block_l
         
         # === Row 3: Difference (Random - Regular) ===
         ax3 = fig.add_subplot(gs[2, col_idx])
-        diff_power = random_data['power'] - regular_data['power']
+        diff_power = regular_data['power'] - random_data['power']
         im3 = ax3.contourf(
             regular_data['times'] * 1000, 
             regular_data['freqs'], 
@@ -188,7 +188,7 @@ def plot_learning_comparison(results, subject_id, lock_type, output_dir, block_l
             levels=20, cmap='RdBu_r', extend='both'
         )
         ax3.axvline(0, color='black', linestyle='--', linewidth=1.5)
-        ax3.set_title(f'Difference (Random - Regular)\n{roi_name} ROI', 
+        ax3.set_title(f'Difference (Regular - Random)\n{roi_name} ROI',
                      fontsize=12, fontweight='bold')
         ax3.set_xlabel('Time (ms)', fontsize=11)
         ax3.set_ylabel('Frequency (Hz)', fontsize=11)
@@ -264,7 +264,7 @@ def plot_testing_comparison(test_results, subject_id, lock_type, test_type, outp
         
         # === Row 3: Difference (Random - Regular) ===
         ax3 = fig.add_subplot(gs[2, col_idx])
-        diff_power = random_data['power'] - regular_data['power']
+        diff_power = regular_data['power'] - random_data['power']
         im3 = ax3.contourf(
             regular_data['times'] * 1000, 
             regular_data['freqs'], 
@@ -272,7 +272,7 @@ def plot_testing_comparison(test_results, subject_id, lock_type, test_type, outp
             levels=20, cmap='RdBu_r', extend='both'
         )
         ax3.axvline(0, color='black', linestyle='--', linewidth=1.5)
-        ax3.set_title(f'Difference (Random - Regular)\n{roi_name} ROI', 
+        ax3.set_title(f'Difference (Regular - Random)\n{roi_name} ROI',
                      fontsize=12, fontweight='bold')
         ax3.set_xlabel('Time (ms)', fontsize=11)
         ax3.set_ylabel('Frequency (Hz)', fontsize=11)

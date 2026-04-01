@@ -30,8 +30,12 @@ import warnings
 # ============================================================
 
 ROI_GROUPS = {
-    'Theta': ['Fz', 'FCz', 'Cz', 'C3', 'C4'],
-    'Alpha': ['O1', 'Oz', 'O2', 'P3', 'Pz', 'P4'],
+    'Motor':                ['Fz', 'FCz', 'Cz', 'C3', 'C4'],
+    'Motor_Frontal':        ['Fz', 'FCz'],
+    'Motor_Central':        ['Cz', 'C3', 'C4'],
+    'Perceptual':           ['O1', 'Oz', 'O2', 'P3', 'Pz', 'P4'],
+    'Perceptual_Parietal':  ['P3', 'Pz', 'P4'],
+    'Perceptual_Occipital': ['O1', 'Oz', 'O2'],
 }
 
 LEARNING_GROUPS = [(7, 11), (12, 16), (17, 21), (22, 26)]
@@ -104,12 +108,16 @@ def _load_h5_response(filepath, roi_name):
 
     roi_name : 'theta' | 'alpha'（大小寫不拘）
     """
-    roi_key = roi_name.capitalize()   # 'Theta' / 'Alpha'
-    roi_channels = ROI_GROUPS.get(roi_key)
+    # 大小寫不敏感查詢
+    roi_channels = None
+    for key in ROI_GROUPS:
+        if key.lower() == roi_name.lower():
+            roi_channels = ROI_GROUPS[key]
+            break
 
     if roi_channels is None:
         raise ValueError(
-            f"未知 ROI: '{roi_key}'，可用: {list(ROI_GROUPS.keys())}"
+            f"未知 ROI: '{roi_name}'，可用: {list(ROI_GROUPS.keys())}"
         )
 
     # 用 MNE 讀取 AverageTFR
@@ -134,7 +142,7 @@ def _load_h5_response(filepath, roi_name):
 
     if not roi_idx:
         raise ValueError(
-            f"ROI '{roi_key}' 的所有頻道均不在檔案中。\n"
+            f"ROI '{roi_name}' 的所有頻道均不在檔案中。\n"
             f"  檔案頻道: {tfr.ch_names}\n"
             f"  ROI 頻道: {roi_channels}"
         )
@@ -338,7 +346,7 @@ def _plot_group_block(arr_reg, arr_ran, freqs, times,
     n_sub    = len(common_ids)
     reg_mean = arr_reg.mean(axis=0)
     ran_mean = arr_ran.mean(axis=0)
-    diff     = ran_mean - reg_mean   # Random − Regular
+    diff     = reg_mean - ran_mean   # Regular − Random
 
     # ── Cluster Permutation Test ──
     sig_mask = None
@@ -386,7 +394,7 @@ def _plot_group_block(arr_reg, arr_ran, freqs, times,
                            f'Random\n(N={n_sub})', vmin_cond, vmax_cond)
     plt.colorbar(im2, ax=axes[1], label='Power (dB)')
 
-    diff_title = 'Difference (Random \u2212 Regular)'
+    diff_title = 'Difference (Regular \u2212 Random)'
     if sig_mask is not None and np.any(sig_mask):
         diff_title += '\n(black outline: p<0.05, cluster-corrected)'
     im3 = _draw_ersp_panel(axes[2], diff, freqs, times,
@@ -641,12 +649,12 @@ def auto_group_ersp_analysis(subject_ids,
 
     combos = []
     for lock in ['stimulus', 'response']:
-        for roi in ['theta', 'alpha']:
+        for roi in [r.lower() for r in ROI_GROUPS.keys()]:
             combos.append({'phase': 'learning', 'test_type': None,
                            'lock_type': lock, 'roi_name': roi})
     for tt in ['motor', 'perceptual']:
         for lock in ['stimulus', 'response']:
-            for roi in ['theta', 'alpha']:
+            for roi in [r.lower() for r in ROI_GROUPS.keys()]:
                 combos.append({'phase': 'testing', 'test_type': tt,
                                'lock_type': lock, 'roi_name': roi})
 
