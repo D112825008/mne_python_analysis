@@ -33,9 +33,13 @@ ROI_GROUPS = {
     'Motor':                ['Fz', 'FCz', 'Cz', 'C3', 'C4'],
     'Motor_Frontal':        ['Fz', 'FCz'],
     'Motor_Central':        ['Cz', 'C3', 'C4'],
+    'Motor_Parietal':       ['P3', 'Pz', 'P4'],
+    'Motor_Occipital':      ['O1', 'Oz', 'O2'],
     'Perceptual':           ['O1', 'Oz', 'O2', 'P3', 'Pz', 'P4'],
     'Perceptual_Parietal':  ['P3', 'Pz', 'P4'],
     'Perceptual_Occipital': ['O1', 'Oz', 'O2'],
+    'Perceptual_Frontal':   ['Fz', 'FCz'],
+    'Perceptual_Central':   ['Cz', 'C3', 'C4'],
 }
 
 LEARNING_GROUPS = [(7, 11), (12, 16), (17, 21), (22, 26)]
@@ -394,7 +398,7 @@ def _plot_group_block(arr_reg, arr_ran, freqs, times,
                            f'Random\n(N={n_sub})', vmin_cond, vmax_cond)
     plt.colorbar(im2, ax=axes[1], label='Power (dB)')
 
-    diff_title = 'Difference (Regular \u2212 Random)'
+    diff_title = 'Difference (Regular - Random)'
     if sig_mask is not None and np.any(sig_mask):
         diff_title += '\n(black outline: p<0.05, cluster-corrected)'
     im3 = _draw_ersp_panel(axes[2], diff, freqs, times,

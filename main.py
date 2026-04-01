@@ -1285,7 +1285,9 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 save_output = input("是否儲存結果？(y/n) [y]: ").strip().lower() or 'y'
                 
                 if save_output == 'y':
-                    output_dir = input("輸出資料夾路徑 [./results]: ").strip() or './results'
+                    _base_dir = input(r"輸出資料夾路徑 [C:\Experiment\Result]: ").strip() or r'C:\Experiment\Result'
+                    output_dir = os.path.join(_base_dir, 'h5')
+                    plot_dir_response = _base_dir
                     
                     # 受試者 ID
                     if hasattr(current_raw, 'filenames') and current_raw.filenames:
@@ -1317,7 +1319,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                     n_jobs=n_jobs,
                     output_dir=output_dir,
                     subject_id=subject_id,
-                    plot_dir=r'C:\Experiment\Result',
+                    plot_dir=plot_dir_response,
                 )
                 
                 # ===== 繪圖 =====

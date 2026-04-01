@@ -136,7 +136,7 @@ def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir
 
     # === 1. 設定頻率參數 ===
     if freqs is None:
-        freqs = np.logspace(np.log10(4), np.log10(30), num=50)
+        freqs = np.arange(4, 41, 1)
     if n_cycles is None:
         n_cycles = freqs / 2.0
 
@@ -164,9 +164,13 @@ def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir
         'Motor':                ['Fz', 'FCz', 'Cz', 'C3', 'C4'],
         'Motor_Frontal':        ['Fz', 'FCz'],
         'Motor_Central':        ['Cz', 'C3', 'C4'],
+        'Motor_Parietal':       ['P3', 'Pz', 'P4'],
+        'Motor_Occipital':      ['O1', 'Oz', 'O2'],
         'Perceptual':           ['O1', 'Oz', 'O2', 'P3', 'Pz', 'P4'],
         'Perceptual_Parietal':  ['P3', 'Pz', 'P4'],
         'Perceptual_Occipital': ['O1', 'Oz', 'O2'],
+        'Perceptual_Frontal':   ['Fz', 'FCz'],
+        'Perceptual_Central':   ['Cz', 'C3', 'C4'],
     }
 
     available_groups = {}
@@ -314,7 +318,7 @@ def asrt_ersp_comparison(epochs_dict, subject_id, condition_labels,
     """
     
     if freqs is None:
-        freqs = np.logspace(np.log10(4), np.log10(30), num=50)  # 4-30 Hz
+        freqs = np.arange(4, 41, 1)
     if n_cycles is None:
         n_cycles = freqs / 2.0  # 頻率相依
     
@@ -395,7 +399,7 @@ def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='sti
     
     # === 2. 設定頻率參數 ===
     if freqs is None:
-        freqs = np.logspace(np.log10(4), np.log10(30), num=50)  # 4-30 Hz (避免低頻 wavelet 太長)
+        freqs = np.arange(4, 41, 1)
     if n_cycles is None:
         n_cycles = freqs / 2.0  # 頻率相依 (4Hz用2 cycles, 30Hz用15 cycles)
     

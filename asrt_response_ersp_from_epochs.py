@@ -13,9 +13,13 @@ _ROI_GROUPS = {
     'Motor':                ['Fz', 'FCz', 'Cz', 'C3', 'C4'],
     'Motor_Frontal':        ['Fz', 'FCz'],
     'Motor_Central':        ['Cz', 'C3', 'C4'],
+    'Motor_Parietal':       ['P3', 'Pz', 'P4'],
+    'Motor_Occipital':      ['O1', 'Oz', 'O2'],
     'Perceptual':           ['O1', 'Oz', 'O2', 'P3', 'Pz', 'P4'],
     'Perceptual_Parietal':  ['P3', 'Pz', 'P4'],
     'Perceptual_Occipital': ['O1', 'Oz', 'O2'],
+    'Perceptual_Frontal':   ['Fz', 'FCz'],
+    'Perceptual_Central':   ['Cz', 'C3', 'C4'],
 }
 
 
@@ -70,6 +74,7 @@ def _compute_pertrial_ersp(epochs_subset, rt_subset, freqs, n_cycles, decim, n_j
     """
     prefix = f"  [{label}] " if label else "  "
     n_epochs = len(epochs_subset)
+
     print(f"{prefix}計算逐 trial Morlet wavelet（{n_epochs} trials）...")
 
     tfr_epochs = mne.time_frequency.tfr_morlet(
@@ -241,10 +246,7 @@ def response_ersp_from_current_epochs(
 
             if output_dir and subject_id:
                 os.makedirs(output_dir, exist_ok=True)
-                default_fname = f"{subject_id}_Response_{cond_name}_{group_label}_{trial_type}_ERSP.h5"
-                h5_fname = input(f"\n請輸入 ERSP 檔名 [預設: {default_fname}]: ").strip() or default_fname
-                if not h5_fname.endswith('.h5'):
-                    h5_fname += '.h5'
+                h5_fname = f"{subject_id}_Response_{cond_name}_{group_label}_{trial_type}_ERSP.h5"
                 out_path = os.path.join(output_dir, h5_fname)
                 power.save(out_path, overwrite=True)
                 print(f"  ✓ 已儲存：{out_path}")
