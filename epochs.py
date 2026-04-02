@@ -373,7 +373,7 @@ def epoch_data_asrt(raw, subject_id):
         
         stim_event_codes = RANDOM_STIM + REGULAR_STIM
         stim_tmin, stim_tmax = -0.8, 1.0
-        stim_baseline = (-0.5, -0.1)
+        stim_baseline = None
         
         # 篩選 Stimulus events 並建立 metadata
         stim_filtered_events = []
@@ -519,7 +519,7 @@ def epoch_data_asrt(raw, subject_id):
         print(f"分析階段: {phase_name} (Block {min_block}-{max_block})")
         print(f"\nStimulus-locked:")
         print(f"  - 時間窗口: {stim_tmin} ~ {stim_tmax} s")
-        print(f"  - Baseline: {stim_baseline}")
+        print(f"  - Baseline: None (applied in ERSP step)")
         print(f"  - Epochs: {len(epochs_stim)}")
         print(f"  - Random: {len(stim_metadata_df[stim_metadata_df['trial_type']=='Random'])}")
         print(f"  - Regular: {len(stim_metadata_df[stim_metadata_df['trial_type']=='Regular'])}")

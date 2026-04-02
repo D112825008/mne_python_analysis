@@ -1275,6 +1275,13 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 
                 print(f"  → 降採樣因子: {decim}")
                 
+                # Baseline 設定
+                print("\nBaseline 設定:")
+                print("  1. 只做 FD baseline（推薦）")
+                print("  2. TD + FD baseline")
+                bl_choice = input("請選擇 (1/2) [1]: ").strip() or '1'
+                do_td_baseline = bl_choice == '2'
+
                 # 平行處理
                 print("\n平行處理:")
                 print("  建議: n_jobs=1（避免 Windows GIL 問題）")
@@ -1320,6 +1327,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                     output_dir=output_dir,
                     subject_id=subject_id,
                     plot_dir=plot_dir_response,
+                    do_td_baseline=do_td_baseline,
                 )
                 
                 # ===== 繪圖 =====

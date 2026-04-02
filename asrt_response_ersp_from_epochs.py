@@ -50,7 +50,7 @@ def _tfr_to_power_dict(tfr):
     return power_dict
 
 
-def _compute_pertrial_ersp(epochs_subset, rt_subset, freqs, n_cycles, decim, n_jobs, label=''):
+def _compute_pertrial_ersp(epochs_subset, rt_subset, freqs, n_cycles, decim, n_jobs, label='', do_td_baseline=False):
     """
     對一組 epochs 執行逐 trial Morlet wavelet，
     再套用各 trial 自己的 logratio baseline，最後平均。
@@ -74,6 +74,11 @@ def _compute_pertrial_ersp(epochs_subset, rt_subset, freqs, n_cycles, decim, n_j
     """
     prefix = f"  [{label}] " if label else "  "
     n_epochs = len(epochs_subset)
+
+    if do_td_baseline:
+        # baseline_window = (-0.5, -0.1) rel. stimulus
+        epochs_subset.apply_baseline(baseline=(-0.5, -0.1))
+        print(f"{prefix}✓ TD baseline correction 完成")
 
     print(f"{prefix}計算逐 trial Morlet wavelet（{n_epochs} trials）...")
 
@@ -129,6 +134,7 @@ def response_ersp_from_current_epochs(
     output_dir=r'C:\Experiment\Result\h5',
     subject_id=None,
     plot_dir=None,
+    do_td_baseline=False,
 ):
     """
     從當前的 Response epochs 執行逐 trial ERSP 分析。
@@ -242,6 +248,7 @@ def response_ersp_from_current_epochs(
                 epochs_sub, rt_sub,
                 freqs, n_cycles, decim, n_jobs,
                 label=f"{key}/{trial_type}",
+                do_td_baseline=do_td_baseline,
             )
 
             if output_dir and subject_id:
@@ -312,6 +319,7 @@ def response_ersp_from_current_epochs(
             response_epochs, rt_values,
             freqs, n_cycles, decim, n_jobs,
             label="All",
+            do_td_baseline=do_td_baseline,
         )
         if output_dir and subject_id:
             os.makedirs(output_dir, exist_ok=True)

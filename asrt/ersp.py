@@ -189,6 +189,14 @@ def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # === 3.5 詢問是否做 TD baseline correction ===
+    do_td = input("是否做 TD baseline correction？(y/n) [n]: ").strip().lower() or 'n'
+    if do_td == 'y':
+        # 對每個 epoch subset 做 TD baseline
+        # baseline_window = (-0.5, -0.1) rel. stimulus
+        epochs.apply_baseline(baseline=(-0.5, -0.1))
+        print("  ✓ TD baseline correction 完成")
+
     # === 4. 依 metadata 決定分析路徑 ===
     # 只有當 epochs 同時包含 Learning 和 Test 兩種 phase 時才分條件
     # 避免 _ersp_testing_phase() 傳入的子集（單一 phase）被再次拆分
