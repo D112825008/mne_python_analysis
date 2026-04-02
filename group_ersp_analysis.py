@@ -540,8 +540,8 @@ def group_ersp_analysis(subject_ids,
 
         tt_cap = test_type.capitalize()
         pair_labels = {
-            'first' : f'Pair-1 (Early {tt_cap} blocks)',
-            'second': f'Pair-2 (Late {tt_cap} blocks)',
+            'first' : f'(Early {tt_cap} blocks)',
+            'second': f'(Late {tt_cap} blocks)',
         }
 
         for pair_key, pair_desc in pair_labels.items():
