@@ -1221,7 +1221,6 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                         picks = [ch.strip() for ch in ch_input.split(',')]
                     
                     # 繪圖
-                    import os
 
                     # 統一成 {cond_name: power} 的 dict，方便後續處理
                     if isinstance(power_response, dict):
