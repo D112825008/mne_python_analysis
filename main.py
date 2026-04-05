@@ -664,7 +664,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                                     print("步驟 3/3: 儲存同步的 epochs")
                                     print("="*60)
                                     
-                                    import os
+#                                    import os
                                     
                                     # 儲存 Stimulus epochs
                                     default_stim_fname = f"{subject_id_from_epochs}_ASRT_stim_{phase_tag}-epo.fif"
@@ -718,7 +718,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                             # 不做極端值排除，直接儲存
                             print("\n跳過極端值排除，儲存原始 epochs...")
                             
-                            import os
+#                            import os
                             
                             # 儲存 Stimulus epochs
                             default_stim_fname = f"{subject_id_from_epochs}_ASRT_stim_{phase_tag}-epo.fif"
@@ -895,7 +895,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                     if not manual_path:
                         print("取消")
                         continue
-                    import os as _os
+#                    import os as _os
                     if not _os.path.exists(manual_path):
                         print(f"❌ 找不到檔案: {manual_path}")
                         continue
