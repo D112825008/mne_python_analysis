@@ -453,34 +453,40 @@ def epoch_data_asrt(raw, subject_id):
         resp_filtered_events = []
         resp_metadata_list = []
         
+        stim_event_codes_for_resp = RANDOM_STIM + REGULAR_STIM
         for sample, prev_id, code in events:
             if code not in resp_event_codes:
                 continue
-            
+
             block_idx = np.searchsorted(block_starts[:, 0], sample) - 1
             if block_idx < 0 or block_idx >= len(block_starts):
                 continue
-            
+
             block_num = block_idx + 1 + missing_practice_blocks
             if block_num < min_block or block_num > max_block:
                 continue
-            
+
             trial_type = "Random" if code in RANDOM_RESP else "Regular"
             phase = "Practice" if block_num <= 6 else ("Learning" if block_num <= 26 else "Test")
             test_type = get_test_type(block_num, test_version)
-            
+
+            stim_samples_before = [s for s, _, c in events if c in stim_event_codes_for_resp and s < sample]
+            stim_sample = stim_samples_before[-1] if stim_samples_before else -1
+
             cond_code = 1 if trial_type == "Random" else 2
             resp_filtered_events.append([sample, 0, cond_code])
-            
+
             metadata_dict = {
                 "block": block_num,
                 "trial_type": trial_type,
                 "phase": phase,
                 "orig_event_code": int(code),
+                'stim_sample': stim_sample,
+                'resp_sample': int(sample),
             }
             if test_type is not None:
                 metadata_dict["test_type"] = test_type
-            
+
             resp_metadata_list.append(metadata_dict)
         
         if len(resp_filtered_events) == 0:
@@ -644,11 +650,19 @@ def epoch_data_asrt(raw, subject_id):
                 "phase": phase,
                 "orig_event_code": int(code),
             }
-            
+
+            # 如果是 Response-locked，記錄對應的 Stimulus sample
+            if epoch_choice == "2":
+                stim_event_codes_for_resp = RANDOM_STIM + REGULAR_STIM
+                stim_samples_before = [s for s, _, c in events if c in stim_event_codes_for_resp and s < sample]
+                stim_sample = stim_samples_before[-1] if stim_samples_before else -1
+                metadata_dict['stim_sample'] = stim_sample
+                metadata_dict['resp_sample'] = int(sample)
+
             # 如果是 testing block，添加 test_type
             if test_type is not None:
                 metadata_dict["test_type"] = test_type
-            
+
             metadata_list.append(metadata_dict)
 
         if len(filtered_events) == 0:

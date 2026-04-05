@@ -90,15 +90,16 @@ def show_main_menu(has_raw=True, has_epochs=False, asrt_available=True):
     if asrt_available:
         print("\n【ASRT 實驗分析】")
         print(" 15. Stimulus ERSP")
-        print(" 16. 輔助：把 RT 加入當前 Epochs (精確對齊)")
-        print(" 17. Response ERSP (per-trial logratio baseline)")
-        print(" 18. ASRT 群體分析 (Group-level ERSP)")
-        print(" 19. ASRT ROI 頻譜分析")
-        print(" 20. ASRT Block 比較分析")
+        print(" 16. Response ERSP（per-trial baseline，直接從 Epochs 執行）")
+        print("     → 不需要額外載入 Raw 資料")
+        print("     → Baseline 從 Epoch metadata 的 Stimulus trigger 自動計算")
+        print(" 17. ASRT 群體分析 (Group-level ERSP)")
+        print(" 18. ASRT ROI 頻譜分析")
+        print(" 19. ASRT Block 比較分析")
 
     print("\n  0. 返回主選單")
 
-    choice = input("\n請輸入選項 (0-20): ").strip()
+    choice = input("\n請輸入選項 (0-19): ").strip()
     return choice
 
 

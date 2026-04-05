@@ -50,7 +50,7 @@ def _tfr_to_power_dict(tfr):
     return power_dict
 
 
-def _compute_pertrial_ersp(epochs_subset, rt_subset, freqs, n_cycles, decim, n_jobs, label='', do_td_baseline=False):
+def _compute_pertrial_ersp(epochs_subset, freqs, n_cycles, decim, n_jobs, label='', do_td_baseline=False):
     """
     對一組 epochs 執行逐 trial Morlet wavelet，
     再套用各 trial 自己的 logratio baseline，最後平均。
@@ -63,7 +63,7 @@ def _compute_pertrial_ersp(epochs_subset, rt_subset, freqs, n_cycles, decim, n_j
     Parameters
     ----------
     epochs_subset : mne.Epochs
-    rt_subset     : ndarray, shape (n_epochs,)  單位：秒
+        必須包含 metadata 欄位 'stim_sample' 和 'resp_sample'
     freqs, n_cycles : ndarray
     decim, n_jobs : int
     label : str
@@ -74,11 +74,6 @@ def _compute_pertrial_ersp(epochs_subset, rt_subset, freqs, n_cycles, decim, n_j
     """
     prefix = f"  [{label}] " if label else "  "
     n_epochs = len(epochs_subset)
-
-    if do_td_baseline:
-        # baseline_window = (-0.5, -0.1) rel. stimulus
-        epochs_subset.apply_baseline(baseline=(-0.5, -0.1))
-        print(f"{prefix}✓ TD baseline correction 完成")
 
     print(f"{prefix}計算逐 trial Morlet wavelet（{n_epochs} trials）...")
 
@@ -94,13 +89,35 @@ def _compute_pertrial_ersp(epochs_subset, rt_subset, freqs, n_cycles, decim, n_j
     )
     # tfr_epochs.data: (n_epochs, n_channels, n_freqs, n_times)
 
-    times = tfr_epochs.times
+    ep_times  = epochs_subset.times
+    times     = tfr_epochs.times
     corrected = np.zeros_like(tfr_epochs.data)  # (n_epochs, n_ch, n_freqs, n_times)
 
+    sfreq = epochs_subset.info['sfreq']
+
     n_short_baseline = 0
-    for i, rt in enumerate(rt_subset):
+    for i in range(n_epochs):
+        stim_sample = epochs_subset.metadata['stim_sample'].values[i]
+        resp_sample = epochs_subset.events[i, 0]
+
+        if stim_sample < 0:
+            # 找不到前置 Stimulus，用預設 RT=0.5s 做 fallback
+            rt = 0.5
+        else:
+            rt = (resp_sample - stim_sample) / sfreq
+
         bl_start = -rt - 0.5
         bl_end   = -rt - 0.1
+
+        # TD baseline（per-trial，可選）
+        if do_td_baseline:
+            td_mask = (ep_times >= bl_start) & (ep_times <= bl_end)
+            if td_mask.sum() == 0:
+                td_mask = (ep_times >= bl_start - 0.2) & (ep_times <= bl_end)
+            td_mean = epochs_subset._data[i][:, td_mask].mean(axis=-1, keepdims=True)
+            epochs_subset._data[i] -= td_mean
+
+        # FD baseline（per-trial，永遠做）
         bl_mask  = (times >= bl_start) & (times <= bl_end)
 
         if bl_mask.sum() == 0:
@@ -170,37 +187,17 @@ def response_ersp_from_current_epochs(
     print("Response ERSP 分析（per-trial logratio baseline）")
     print("="*70)
 
-    # ===== 步驟 1：檢查 metadata 和 RT =====
-    print("\n步驟 1：檢查 metadata 和 RT")
+    # ===== 步驟 1：確認參數 =====
+    print("\n步驟 1：確認參數")
 
     if not hasattr(response_epochs, 'metadata') or response_epochs.metadata is None:
         raise ValueError("Response epochs 沒有 metadata！")
 
+    if 'stim_sample' not in response_epochs.metadata.columns:
+        raise ValueError("Response epochs 的 metadata 缺少 'stim_sample' 欄位，請重新建立 Epochs。")
+
     meta = response_epochs.metadata
-    if 'rt' not in meta.columns:
-        raise ValueError("Metadata 中沒有 'rt' 欄位！請先執行 RT 對齊步驟")
-
-    rt_values = meta['rt'].values.astype(float)
-
-    # 排除 NaN
-    valid_mask = ~np.isnan(rt_values)
-    n_nan = np.sum(~valid_mask)
-    if n_nan > 0:
-        print(f"  排除 rt=NaN：{n_nan} trials")
-
-    # 排除 RT < 0.15 s（過快，不可靠）
-    valid_mask &= (rt_values >= 0.15)
-    n_fast = np.sum(~valid_mask) - n_nan
-    if n_fast > 0:
-        print(f"  排除 rt<0.15s：{n_fast} trials")
-
-    response_epochs = response_epochs[valid_mask]
-    meta            = response_epochs.metadata
-    rt_values       = meta['rt'].values.astype(float)
-
-    print(f"  保留 epochs：{len(response_epochs)}")
-    print(f"  RT 範圍：{rt_values.min()*1000:.1f} – {rt_values.max()*1000:.1f} ms")
-    print(f"  RT 平均：{rt_values.mean()*1000:.1f} ± {rt_values.std()*1000:.1f} ms")
+    print(f"  Response epochs：{len(response_epochs)}")
 
     # ===== n_cycles =====
     if n_cycles_func is None:
@@ -240,12 +237,11 @@ def response_ersp_from_current_epochs(
             key = f"{cond_name}_{group_label}"
             print(f"\n  [{key} / {trial_type}]  {sub_n} trials")
 
-            sub_indices  = np.where(sub_mask)[0]
-            epochs_sub   = response_epochs[sub_indices]
-            rt_sub       = rt_values[sub_mask]
+            sub_indices = np.where(sub_mask)[0]
+            epochs_sub  = response_epochs[sub_indices]
 
             power = _compute_pertrial_ersp(
-                epochs_sub, rt_sub,
+                epochs_sub,
                 freqs, n_cycles, decim, n_jobs,
                 label=f"{key}/{trial_type}",
                 do_td_baseline=do_td_baseline,
@@ -316,7 +312,7 @@ def response_ersp_from_current_epochs(
         print(f"  All  ({len(response_epochs)} trials)")
         print(f"{'─'*60}")
         power = _compute_pertrial_ersp(
-            response_epochs, rt_values,
+            response_epochs,
             freqs, n_cycles, decim, n_jobs,
             label="All",
             do_td_baseline=do_td_baseline,
@@ -410,3 +406,18 @@ def response_ersp_from_current_epochs(
     print(f"{'='*70}")
 
     return results
+
+
+if __name__ == '__main__':
+    import inspect
+    for name, func in [
+        ('_compute_pertrial_ersp', _compute_pertrial_ersp),
+        ('response_ersp_from_current_epochs', response_ersp_from_current_epochs),
+    ]:
+        print(f'\n{"="*60}')
+        print(f'函數：{name}')
+        print(f'{"="*60}')
+        sig = inspect.signature(func)
+        print(f'參數：{sig}')
+        src = inspect.getsource(func)
+        print(src)

@@ -927,6 +927,13 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 print(f"  採樣率: {stim_epochs.info['sfreq']} Hz")
                 print(f"  類型: Stimulus-locked ✓")
 
+                # ── Baseline 設定 ──
+                print("\nBaseline 設定:")
+                print("  1. 只做 FD baseline（推薦）")
+                print("  2. TD + FD baseline")
+                bl_choice = input("請選擇 (1/2) [1]: ").strip() or '1'
+                do_td_baseline = bl_choice == '2'
+
                 # ── 群體分析選項 ──
                 print("\n" + "─"*60)
                 print("群體分析選項：")
@@ -956,7 +963,8 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                         phase=phase,
                         lock_type='stimulus',
                         save_for_group_analysis=save_for_group,
-                        group_data_dir=r'C:\Experiment\Result\h5'
+                        group_data_dir=r'C:\Experiment\Result\h5',
+                        do_td_baseline=do_td_baseline,
                     )
 
                     if result:
@@ -974,7 +982,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 import traceback
                 traceback.print_exc()
         
-        elif choice == '19':
+        elif choice == '18':
             # ASRT ROI 頻譜分析
             try:
                 result = asrt_roi_spectral_analysis(current_epochs, subject_id)
@@ -987,7 +995,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 import traceback
                 traceback.print_exc()
 
-        elif choice == '20':
+        elif choice == '19':
             # ASRT Block 比較分析
             try:
                 result = asrt_block_comparison(current_epochs, subject_id)
@@ -1005,7 +1013,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 import traceback
                 traceback.print_exc()
 
-        elif choice == '18':
+        elif choice == '17':
             # ASRT 群體分析 — 全自動跑完所有組合
             try:
                 from mne_python_analysis.group_ersp_analysis import auto_group_ersp_analysis
@@ -1078,105 +1086,6 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 traceback.print_exc()
         
         elif choice == '16':
-        # 輔助功能：把 RT 加入 epochs metadata（精確對齊）
-            import os
-            import pandas as pd
-            import numpy as np
-            
-            if current_epochs is None:
-                print("\n⚠️  請先建立 Epochs")
-                continue
-            
-            print("\n" + "="*70)
-            print("把 RT 加入 Epochs Metadata（精確對齊）")
-            print("="*70)
-            
-            # 檢查 metadata
-            if not hasattr(current_epochs, 'metadata') or current_epochs.metadata is None:
-                print("\n✗ Epochs 沒有 metadata")
-                print("  請使用 ASRT 專用 Epochs 建立功能（選項 7）")
-                continue
-            
-            metadata = current_epochs.metadata
-            
-            # 檢查 block 欄位
-            if 'block' not in metadata.columns:
-                print("✗ Metadata 中沒有 'block' 欄位")
-                print("  無法進行 RT 對齊")
-                print("\n  當前 metadata 欄位:", list(metadata.columns))
-                continue
-            
-            # 檢查或創建 trial_in_block 欄位
-            if 'trial_in_block' not in metadata.columns:
-                print("⚠️  Metadata 中沒有 'trial_in_block' 欄位")
-                print("  將自動創建...")
-                
-                # 自動創建 trial_in_block
-                metadata_copy = metadata.copy()
-                metadata_copy['trial_in_block'] = metadata_copy.groupby('block').cumcount()
-                
-                current_epochs.metadata = metadata_copy
-                
-                print(f"  ✓ 已創建 'trial_in_block' 欄位")
-                print(f"    範例: Block {metadata_copy['block'].iloc[0]}, Trial {metadata_copy['trial_in_block'].iloc[0]}")
-                
-                # 顯示每個 block 的 trials 數量
-                block_counts = metadata_copy.groupby('block').size()
-                print(f"\n  各 Block 的 trials 數量:")
-                for block, count in block_counts.items():
-                    print(f"    Block {block}: {count} trials")
-            
-            # 精確對齊方法
-            print("\n使用精確對齊方法")
-            print("  根據 metadata 中的 block 和 trial_in_block")
-            print("  從行為資料中精確提取對應的 RT")
-            
-            # 輸入 RT 檔案路徑
-            print("\n行為資料 CSV 檔案路徑:", end=" ")
-            rt_file = input().strip().strip('"')
-            
-            if not rt_file:
-                print("取消")
-                continue
-            
-            # 檢查檔案是否存在
-            if not os.path.exists(rt_file):
-                print(f"\n⚠️  檔案不存在: {rt_file}")
-                continue
-            
-            try:
-                # 使用 add_rt_to_epochs_from_behavioral 函數
-                from extract_rt_precise import add_rt_to_epochs_from_behavioral
-                
-                result = add_rt_to_epochs_from_behavioral(
-                    epochs=current_epochs,
-                    behavioral_csv=rt_file
-                )
-                
-                # 處理返回值（可能是 tuple）
-                if isinstance(result, tuple):
-                    current_epochs = result[0]
-                else:
-                    current_epochs = result
-                
-                # 檢查結果
-                if 'rt' in current_epochs.metadata.columns:
-                    rt_values = current_epochs.metadata['rt'].values
-                    valid_rt = ~np.isnan(rt_values)
-                    
-                    print("\n最終統計:")
-                    print(f"  RT 範圍: {rt_values[valid_rt].min()*1000:.1f} - {rt_values[valid_rt].max()*1000:.1f} ms")
-                    print(f"  RT 平均: {rt_values[valid_rt].mean()*1000:.1f} ± {rt_values[valid_rt].std()*1000:.1f} ms")
-                    print(f"  有效 RT: {np.sum(valid_rt)}/{len(rt_values)}")
-                else:
-                    print("\n⚠️  RT 未成功加入 metadata")
-                
-            except Exception as e:
-                print(f"\n加入 RT 時發生錯誤: {str(e)}")
-                import traceback
-                traceback.print_exc()
-        
-        elif choice == '17':
             # Response ERSP 分析（per-trial logratio baseline）
 
             print("\n" + "="*70)
@@ -1191,37 +1100,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
             if current_epochs is None:
                 print("\n⚠️  請先建立 Response-locked Epochs（選項 8）")
                 continue
-            
-            # 檢查是否有 RT
-            if not hasattr(current_epochs, 'metadata') or current_epochs.metadata is None:
-                print("\n⚠️  Epochs 沒有 metadata")
-                print("  請先執行選項 20 加入 RT")
-                continue
-            
-            if 'rt' not in current_epochs.metadata.columns:
-                print("\n⚠️  Metadata 中沒有 'rt' 欄位")
-                print("  請先執行選項 16 加入 RT")
-                continue
 
-            # 檢查 RT 是否有效
-            rt_values = current_epochs.metadata['rt'].values
-            valid_rt = ~np.isnan(rt_values)
-
-            if not np.any(valid_rt):
-                print("\n⚠️  所有 epochs 的 RT 都是 NaN")
-                print("  請檢查選項 16 的執行結果")
-                continue
-
-            if not np.all(valid_rt):
-                print(f"\n⚠️  有 {np.sum(~valid_rt)} 個 epochs 缺少 RT")
-                print(f"  將只分析有 RT 的 {np.sum(valid_rt)} 個 epochs")
-            
-            print(f"\n當前狀態:")
-            print(f"  Raw 資料: ✓")
-            print(f"  Response epochs: {len(current_epochs)} 個")
-            print(f"  有效 RT: {np.sum(valid_rt)} 個")
-            print(f"  RT 範圍: {rt_values[valid_rt].min()*1000:.1f} - {rt_values[valid_rt].max()*1000:.1f} ms")
-            
             # ===== 確認執行 =====
             confirm = input("\n確定執行 Response ERSP 分析？(y/n): ").strip().lower()
             if confirm != 'y':
@@ -1294,20 +1173,9 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 if save_output == 'y':
                     _base_dir = input(r"輸出資料夾路徑 [C:\Experiment\Result]: ").strip() or r'C:\Experiment\Result'
                     output_dir = os.path.join(_base_dir, 'h5')
-                    plot_dir_response = _base_dir
-                    
+
                     # 受試者 ID
-                    if hasattr(current_raw, 'filenames') and current_raw.filenames:
-                        import os
-                        filename = os.path.basename(current_raw.filenames[0])
-                        # 嘗試從檔名提取受試者 ID
-                        if 'sub' in filename.lower():
-                            subject_id = filename.split('_')[0]
-                        else:
-                            subject_id = 'sub'
-                    else:
-                        subject_id = 'sub'
-                    
+                    subject_id = 'sub'
                     subject_id = input(f"受試者 ID [{subject_id}]: ").strip() or subject_id
                 else:
                     output_dir = None
@@ -1316,7 +1184,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 print("\n" + "-"*70)
                 print("開始分析...")
                 print("-"*70)
-                
+
                 # ===== 執行分析 =====
                 power_response = response_ersp_from_current_epochs(
                     response_epochs=current_epochs,
@@ -1326,7 +1194,6 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                     n_jobs=n_jobs,
                     output_dir=output_dir,
                     subject_id=subject_id,
-                    plot_dir=plot_dir_response,
                     do_td_baseline=do_td_baseline,
                 )
                 

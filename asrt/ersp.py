@@ -109,7 +109,7 @@ def _compute_single_ersp(epochs_subset, available_groups, freqs, n_cycles, basel
     return power_dict if power_dict else None
 
 
-def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir='./'):
+def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir='./', do_td_baseline=False):
     """
     ASRT ERSP 分析（使用 Dillian 的參數 + Lum et al. 2023 視覺化風格）
 
@@ -189,11 +189,8 @@ def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # === 3.5 詢問是否做 TD baseline correction ===
-    do_td = input("是否做 TD baseline correction？(y/n) [n]: ").strip().lower() or 'n'
-    if do_td == 'y':
-        # 對每個 epoch subset 做 TD baseline
-        # baseline_window = (-0.5, -0.1) rel. stimulus
+    # === 3.5 TD baseline correction（可選）===
+    if do_td_baseline:
         epochs.apply_baseline(baseline=(-0.5, -0.1))
         print("  ✓ TD baseline correction 完成")
 
@@ -348,10 +345,11 @@ def asrt_ersp_comparison(epochs_dict, subject_id, condition_labels,
     
     return power_by_condition
 
-def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='stimulus', 
+def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='stimulus',
                             freqs=None, n_cycles=None, output_dir='./ersp_results',
-                            save_for_group_analysis=False,  # ← 新增參數
-                            group_data_dir=r'C:\Experiment\Result\h5'):  # h5 儲存路徑
+                            save_for_group_analysis=False,
+                            group_data_dir=r'C:\Experiment\Result\h5',
+                            do_td_baseline=False):
     """
     完整的 ASRT ERSP 分析（階層式）
     
@@ -414,11 +412,13 @@ def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='sti
     # === 3. 根據 phase 分析 ===
     if phase.lower() == 'learning':
         results = _ersp_learning_phase(
-            epochs, subject_id, lock_type, freqs, n_cycles, output_dir
+            epochs, subject_id, lock_type, freqs, n_cycles, output_dir,
+            do_td_baseline=do_td_baseline,
         )
     elif phase.lower() == 'testing':
         results = _ersp_testing_phase(
-            epochs, subject_id, lock_type, freqs, n_cycles, output_dir
+            epochs, subject_id, lock_type, freqs, n_cycles, output_dir,
+            do_td_baseline=do_td_baseline,
         )
     else:
         raise ValueError(f"Unknown phase: {phase}. Use 'learning' or 'testing'")
@@ -503,7 +503,7 @@ def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='sti
     
     return results
 
-def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_dir):
+def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_dir, do_td_baseline=False):
     """
     Learning 階段 ERSP 分析
 
@@ -561,7 +561,8 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
                     subject_id=f"{subject_id}_{lock_type}_learning_{group_label}_{trial_type}",
                     freqs=freqs,
                     n_cycles=n_cycles,
-                    output_dir=output_dir
+                    output_dir=output_dir,
+                    do_td_baseline=do_td_baseline,
                 )
                 group_results[trial_type] = power_dict
 
@@ -584,7 +585,8 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
             power_dict = asrt_ersp_analysis(
                 epochs_subset,
                 subject_id=f"{subject_id}_{lock_type}_learning_{trial_type}",
-                freqs=freqs, n_cycles=n_cycles, output_dir=output_dir
+                freqs=freqs, n_cycles=n_cycles, output_dir=output_dir,
+                do_td_baseline=do_td_baseline,
             )
             results[trial_type] = power_dict
 
@@ -594,7 +596,7 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
     return results
 
 
-def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_dir):
+def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_dir, do_td_baseline=False):
     """
     Testing 階段 ERSP 分析
 
@@ -664,7 +666,8 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
                         subject_id=f"{subject_id}_{lock_type}_testing_{test_type}_{group_label}_{trial_type}",
                         freqs=freqs,
                         n_cycles=n_cycles,
-                        output_dir=output_dir
+                        output_dir=output_dir,
+                        do_td_baseline=do_td_baseline,
                     )
                     test_results[trial_type] = power_dict
                     results[group_label][test_type][trial_type] = power_dict
@@ -696,7 +699,8 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
                 power_dict = asrt_ersp_analysis(
                     epochs_subset,
                     subject_id=f"{subject_id}_{lock_type}_testing_{test_type}_{trial_type}",
-                    freqs=freqs, n_cycles=n_cycles, output_dir=output_dir
+                    freqs=freqs, n_cycles=n_cycles, output_dir=output_dir,
+                    do_td_baseline=do_td_baseline,
                 )
                 results[test_type][trial_type] = power_dict
 
