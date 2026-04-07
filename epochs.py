@@ -148,7 +148,7 @@ def epoch_data_interactive(raw, subject_id):
     return epochs
 
 
-def epoch_data_asrt(raw, subject_id):
+def epoch_data_asrt(raw, subject_id, trial_classification='trigger'):
     """
     ASRT 實驗專用的 epoch 建立函數
 
@@ -406,7 +406,8 @@ def epoch_data_asrt(raw, subject_id):
             }
             if test_type is not None:
                 metadata_dict["test_type"] = test_type
-            
+            metadata_dict['classification'] = trial_classification
+
             stim_metadata_list.append(metadata_dict)
         
         if len(stim_filtered_events) == 0:
@@ -486,6 +487,7 @@ def epoch_data_asrt(raw, subject_id):
             }
             if test_type is not None:
                 metadata_dict["test_type"] = test_type
+            metadata_dict['classification'] = trial_classification
 
             resp_metadata_list.append(metadata_dict)
         
@@ -769,7 +771,405 @@ def epoch_data_asrt(raw, subject_id):
         return epochs
 
 
-def epoch_data(raw, subject_id, epoch_length=2.0, tmin=0, reject_threshold=150e-6, 
+def _tag_classification(result, label):
+    """Add 'classification' column to epoch metadata (handles Epochs or dict)."""
+    if result is None:
+        return result
+    if isinstance(result, dict):
+        for key in ('stimulus', 'response'):
+            ep = result.get(key)
+            if ep is not None and hasattr(ep, 'metadata') and ep.metadata is not None:
+                ep.metadata['classification'] = label
+    elif hasattr(result, 'metadata') and result.metadata is not None:
+        result.metadata['classification'] = label
+    return result
+
+
+def create_asrt_epochs(raw, subject_id, behavior_df=None, trial_classification='trigger'):
+    """
+    ASRT Epoch 建立，支援兩種 trial 分類方式。
+
+    Parameters
+    ----------
+    raw : mne.io.Raw
+    subject_id : str
+    behavior_df : pd.DataFrame or None
+        從 CSV 載入的行為資料（含 learning_loop.thisRepN、thisTrialN、
+        correct_answer_index 等欄位）
+    trial_classification : str
+        'trigger'  — 根據 trigger code 分類 Regular / Random（預設）
+        'triplet'  — 根據 triplet 出現頻率分類 high / low
+
+    Returns
+    -------
+    同 epoch_data_asrt() 的回傳格式
+    """
+    if trial_classification == 'trigger':
+        return _tag_classification(epoch_data_asrt(raw, subject_id, trial_classification='trigger'), 'trigger')
+
+    # ── triplet 分類模式 ──────────────────────────────────────────
+    if behavior_df is None:
+        print("⚠  triplet 分類需要行為資料（behavior_df），已自動改為 trigger 分類")
+        return _tag_classification(epoch_data_asrt(raw, subject_id, trial_classification='triplet'), 'triplet')
+
+    from collections import Counter
+    import os
+
+    print("\n" + "=" * 60)
+    print("ASRT Epoch 建立（Triplet 頻率分類：high / low）")
+    print("=" * 60)
+
+    # === 1. 取得 events ===
+    try:
+        events, event_id_map = mne.events_from_annotations(raw)
+        print("使用 annotations 建立 events")
+    except Exception:
+        print("找不到 annotations，改用 Trigger 通道偵測 events")
+        events = mne.find_events(raw, stim_channel='Trigger', shortest_event=1)
+        event_id_map = None
+
+    print(f"找到事件總數: {len(events)}")
+    if len(events) > 0:
+        print("事件碼種類:", np.unique(events[:, 2]))
+
+    def _code(label):
+        if event_id_map is None:
+            try:
+                return int(label)
+            except ValueError:
+                return None
+        return event_id_map.get(label, None)
+
+    # === 2. ASRT 事件碼 ===
+    BLOCK_START  = _code("10")
+    RANDOM_STIM  = [c for c in [_code(x) for x in ["41","42","43","44"]] if c is not None]
+    REGULAR_STIM = [c for c in [_code(x) for x in ["46","47","48","49"]] if c is not None]
+    RANDOM_RESP  = [c for c in [_code(x) for x in ["21","22","23","24"]] if c is not None]
+    REGULAR_RESP = [c for c in [_code(x) for x in ["26","27","28","29"]] if c is not None]
+
+    # === 3. Block 結構 ===
+    block_starts = (events[events[:, 2] == BLOCK_START]
+                    if BLOCK_START is not None
+                    else np.empty((0, 3), dtype=int))
+    n_blocks = len(block_starts)
+    print(f"\n偵測到 {n_blocks} 個 blocks")
+    if n_blocks == 0:
+        print("⚠  無法偵測到 block start，無法進行 ASRT 切段")
+        return None
+
+    expected_total = 34
+    missing_practice_blocks = max(0, expected_total - n_blocks)
+    if missing_practice_blocks > 0:
+        print(f"推估缺少前 {missing_practice_blocks} 個練習 block，"
+              f"第一個偵測到的 block 視為第 {missing_practice_blocks + 1} 區塊")
+
+    # === 4. Epoch 類型 ===
+    print("\n" + "=" * 60)
+    print("選擇 Epoch 類型")
+    print("=" * 60)
+    print("1. Stimulus-locked  (tmin=-0.8s, tmax=1.0s)")
+    print("2. Response-locked  (tmin=-1.5s, tmax=0.2s)")
+    print("3. 兩者都建立（推薦）")
+    while True:
+        ec = input("\n請選擇 (1/2/3) [預設 3]: ").strip() or "3"
+        if ec in ("1", "2", "3"):
+            break
+        print("⚠  請輸入 1、2 或 3")
+
+    # === 5. 分析階段 ===
+    print("\n" + "=" * 60)
+    print("選擇分析階段")
+    print("=" * 60)
+    print("1. 僅學習階段 (Block 7-26) - 推薦")
+    print("2. 僅測驗階段 (Block 27-34)")
+    print("3. 學習+測驗 (Block 7-34)")
+    while True:
+        pc = input("\n請選擇 (1/2/3) [預設 1]: ").strip() or "1"
+        if pc == "1":
+            min_block, max_block, phase_name = 7, 26, "Learning"
+            break
+        elif pc == "2":
+            min_block, max_block, phase_name = 27, 34, "Test"
+            break
+        elif pc == "3":
+            min_block, max_block, phase_name = 7, 34, "Learning+Test"
+            break
+        else:
+            print("⚠  請輸入 1、2 或 3")
+
+    # === 5.5. Testing 版本（若包含 testing blocks）===
+    test_version = None
+    if max_block >= 27:
+        print("\n" + "=" * 60)
+        print("Testing Block 版本選擇")
+        print("=" * 60)
+        print("1. Motor-first（27,28,33,34=motor；29-32=perceptual）")
+        print("2. Perceptual-first（27,28,33,34=perceptual；29-32=motor）")
+        while True:
+            vc = input("\n請選擇 (1/2): ").strip()
+            if vc == "1":
+                test_version = "motor_first"
+                break
+            elif vc == "2":
+                test_version = "perceptual_first"
+                break
+            else:
+                print("⚠  請輸入 1 或 2")
+
+    def _get_test_type(block_num):
+        if block_num < 27 or block_num > 34:
+            return None
+        if test_version == "motor_first":
+            return "motor" if block_num in [27, 28, 33, 34] else "perceptual"
+        if test_version == "perceptual_first":
+            return "perceptual" if block_num in [27, 28, 33, 34] else "motor"
+        return None
+
+    # === 6. 從 behavior_df 預先建立 triplet 序列 ===
+    # block_triplets[block_num][trial_in_block] = {'triplet': str|None, 'valid': bool}
+    block_triplets = {}
+
+    key_rep   = 'learning_loop.thisTrialN'   # block 編號（0-19）
+    key_trial = 'learning_trials.thisTrialN' # trial in block（0-84）
+    key_ans   = 'correct_answer_index'
+
+    if all(k in behavior_df.columns for k in (key_rep, key_trial, key_ans)):
+        print("\n從行為資料建立 triplet 序列...")
+        for block_num in range(min_block, min(max_block + 1, 27)):
+            csv_block = block_num - 7
+            valid_mask = behavior_df[key_rep].notna()
+            rep_vals = behavior_df[key_rep].copy()
+            rep_vals[~valid_mask] = -999
+            rep_vals = rep_vals.astype(float).astype(int)
+            rows = (behavior_df[valid_mask & (rep_vals == int(csv_block))]
+                    .sort_values(by=key_trial, key=lambda x: x.astype(float)))
+            if rows.empty:
+                continue
+            full_seq = rows[key_ans].dropna().astype(int).tolist()
+            if len(full_seq) <= 6:
+                continue
+
+            tmap = {}
+            for i in range(len(full_seq)):
+                # index 0-4: practice; index 5-6: 前兩個非 practice trial，缺完整 n-2
+                if i < 7:
+                    tmap[i] = {'triplet': None, 'valid': False}
+                    continue
+                n2, n1, n = full_seq[i-2], full_seq[i-1], full_seq[i]
+                # 排除 repetition（111, 222, …）
+                if str(n2) == str(n1) == str(n):
+                    tmap[i] = {'triplet': None, 'valid': False}
+                    continue
+                # 排除 trill（121, 232, …）
+                if str(n2) == str(n):
+                    tmap[i] = {'triplet': None, 'valid': False}
+                    continue
+                tmap[i] = {'triplet': f"{n2}{n1}{n}", 'valid': True}
+            block_triplets[block_num] = tmap
+        print(f"✓ 已建立 {len(block_triplets)} 個 learning block 的 triplet 序列")
+    else:
+        missing = [k for k in (key_rep, key_trial, key_ans) if k not in behavior_df.columns]
+        print(f"⚠  behavior_df 缺少欄位 {missing}，已改為 trigger 分類")
+        return _tag_classification(epoch_data_asrt(raw, subject_id, trial_classification='triplet'), 'triplet')
+
+    # === 7. 輔助函式 ===
+    def _collect_trials(event_codes, epoch_type):
+        """掃描事件，回傳含 triplet 資訊的 trial list"""
+        block_counter = {}
+        trial_list = []
+        for sample, _, code in events:
+            if code not in event_codes:
+                continue
+            block_idx = np.searchsorted(block_starts[:, 0], sample) - 1
+            if block_idx < 0 or block_idx >= len(block_starts):
+                continue
+            block_num = block_idx + 1 + missing_practice_blocks
+            if block_num < min_block or block_num > max_block:
+                continue
+
+            block_counter.setdefault(block_num, 0)
+            tib = block_counter[block_num]
+            block_counter[block_num] += 1
+
+            random_codes = RANDOM_STIM if epoch_type == 'stim' else RANDOM_RESP
+            position_type = 'random' if code in random_codes else 'regular'
+            phase = ('Practice' if block_num <= 6
+                     else ('Learning' if block_num <= 26 else 'Test'))
+
+            entry = block_triplets.get(block_num, {}).get(tib, {})
+            trial_list.append({
+                'sample': sample,
+                'code': code,
+                'block_num': block_num,
+                'trial_in_block': tib,
+                'position_type': position_type,
+                'phase': phase,
+                'test_type': _get_test_type(block_num),
+                'triplet': entry.get('triplet'),
+                'triplet_valid': entry.get('valid', False),
+            })
+        return trial_list
+
+    def _assign_types(trial_list):
+        """計算 random triplet 頻率後賦予 trial_type（high / low / None）"""
+        random_counts = Counter(
+            t['triplet'] for t in trial_list
+            if t['position_type'] == 'random'
+            and t['triplet_valid']
+            and t['triplet'] is not None
+        )
+        median_count = (np.median(list(random_counts.values()))
+                        if random_counts else 0)
+
+        for t in trial_list:
+            if t['position_type'] == 'regular':
+                t['trial_type'] = 'high'
+            elif t['position_type'] == 'random':
+                if not t['triplet_valid'] or t['triplet'] is None:
+                    t['trial_type'] = None
+                else:
+                    cnt = random_counts.get(t['triplet'], 0)
+                    t['trial_type'] = 'high' if cnt >= median_count else 'low'
+            else:
+                t['trial_type'] = None
+        return trial_list
+
+    def _to_mne(trial_list, tmin, tmax):
+        """將 trial list 轉為 MNE Epochs"""
+        cond_map = {'high': 1, 'low': 2}
+        ev_rows, meta_rows = [], []
+        for t in trial_list:
+            if t['trial_type'] is None:
+                continue
+            ev_rows.append([t['sample'], 0, cond_map[t['trial_type']]])
+            row = {
+                'block': t['block_num'],
+                'trial_in_block': t['trial_in_block'],
+                'trial_type': t['trial_type'],
+                'position_type': t['position_type'],
+                'phase': t['phase'],
+                'orig_event_code': int(t['code']),
+                'triplet': t['triplet'],
+            }
+            if t['test_type'] is not None:
+                row['test_type'] = t['test_type']
+            meta_rows.append(row)
+
+        if not ev_rows:
+            return None
+        ev_arr = np.array(ev_rows, dtype=int)
+        meta_df = pd.DataFrame(meta_rows)
+
+        for ch in ('A1', 'A2'):
+            if ch in raw.ch_names:
+                raw.set_channel_types({ch: 'misc'})
+
+        return mne.Epochs(
+            raw, ev_arr,
+            event_id={'high': 1, 'low': 2},
+            tmin=tmin, tmax=tmax,
+            baseline=None,
+            reject=None,
+            reject_by_annotation=True,
+            metadata=meta_df,
+            preload=True,
+        )
+
+    # === 8. 建立 Epochs ===
+    phase_tag = {"Learning": "learn", "Test": "test", "Learning+Test": "all"}[phase_name]
+
+    if ec == "3":
+        # --- Stimulus-locked ---
+        stim_trials = _assign_types(_collect_trials(RANDOM_STIM + REGULAR_STIM, 'stim'))
+        epochs_stim = _to_mne(stim_trials, tmin=-0.8, tmax=1.0)
+        if epochs_stim is None:
+            print("⚠  Stimulus events 篩選後沒有任何事件")
+            return None
+        print(f"\n✓ Stimulus-locked Epochs: {len(epochs_stim)}")
+        for lbl in ('high', 'low'):
+            n = (epochs_stim.metadata['trial_type'] == lbl).sum()
+            print(f"   {lbl}: {n}")
+
+        # --- Response-locked ---
+        resp_trials = _assign_types(_collect_trials(RANDOM_RESP + REGULAR_RESP, 'resp'))
+        epochs_resp = _to_mne(resp_trials, tmin=-1.5, tmax=0.2)
+        if epochs_resp is None:
+            print("⚠  Response events 篩選後沒有任何事件")
+            epochs_resp = None
+        else:
+            print(f"\n✓ Response-locked Epochs: {len(epochs_resp)}")
+            for lbl in ('high', 'low'):
+                n = (epochs_resp.metadata['trial_type'] == lbl).sum()
+                print(f"   {lbl}: {n}")
+
+        # resp_to_stim_map（按 sample 最近配對）
+        resp_to_stim_map = {}
+        if epochs_resp is not None:
+            stim_samples = np.array([t['sample'] for t in stim_trials
+                                     if t['trial_type'] is not None])
+            resp_samples_all = [t['sample'] for t in resp_trials
+                                if t['trial_type'] is not None]
+            for resp_i, rs in enumerate(resp_samples_all):
+                before = stim_samples[stim_samples < rs]
+                if len(before):
+                    stim_i = int(np.where(stim_samples == before[-1])[0][0])
+                    resp_to_stim_map[resp_i] = stim_i
+
+        # 詢問儲存檔名
+        default_stim = f"{subject_id}_ASRT_stim_{phase_tag}_triplet-epo.fif"
+        default_resp = f"{subject_id}_ASRT_resp_{phase_tag}_triplet-epo.fif"
+        fname_s = input(f"\nStimulus epoch 檔名 [預設: {default_stim}]: ").strip() or default_stim
+        epochs_stim.save(os.path.join(os.getcwd(), fname_s), overwrite=True)
+        print(f"✓ 已儲存: {fname_s}")
+
+        if epochs_resp is not None:
+            fname_r = input(f"Response epoch 檔名 [預設: {default_resp}]: ").strip() or default_resp
+            epochs_resp.save(os.path.join(os.getcwd(), fname_r), overwrite=True)
+            print(f"✓ 已儲存: {fname_r}")
+
+        result = {
+            'stimulus': epochs_stim,
+            'response': epochs_resp,
+            'resp_to_stim_map': resp_to_stim_map,
+            'n_stim': len(epochs_stim),
+            'n_resp': len(epochs_resp) if epochs_resp is not None else 0,
+            'phase_name': phase_name,
+            'phase_tag': phase_tag,
+            'min_block': min_block,
+            'max_block': max_block,
+            'subject_id': subject_id,
+        }
+        return _tag_classification(result, 'triplet')
+
+    # --- Stimulus 或 Response 單一模式 ---
+    if ec == "1":
+        trials = _assign_types(_collect_trials(RANDOM_STIM + REGULAR_STIM, 'stim'))
+        ep = _to_mne(trials, tmin=-0.8, tmax=1.0)
+        lock_tag = "stim"
+    else:
+        trials = _assign_types(_collect_trials(RANDOM_RESP + REGULAR_RESP, 'resp'))
+        ep = _to_mne(trials, tmin=-1.5, tmax=0.2)
+        lock_tag = "resp"
+
+    if ep is None:
+        print("⚠  篩選後沒有任何事件")
+        return None
+
+    print(f"\n✓ Epochs 建立完成: {len(ep)}")
+    for lbl in ('high', 'low'):
+        n = (ep.metadata['trial_type'] == lbl).sum()
+        print(f"   {lbl}: {n}")
+
+    default_fname = f"{subject_id}_ASRT_{lock_tag}_{phase_tag}_triplet-epo.fif"
+    fname = input(f"\n請輸入 epochs 檔名 [預設: {default_fname}]: ").strip() or default_fname
+    ep.save(os.path.join(os.getcwd(), fname), overwrite=True)
+    print(f"✓ 已儲存: {fname}")
+
+    ep.metadata['classification'] = 'triplet'
+    return ep
+
+
+def epoch_data(raw, subject_id, epoch_length=2.0, tmin=0, reject_threshold=150e-6,
                reject_by_annotation=True):
     """
     創建EEG epochs（預設參數版本）。

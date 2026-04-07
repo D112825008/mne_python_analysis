@@ -22,6 +22,7 @@ from mne_python_analysis.epochs import (
     epoch_data,
     epoch_data_interactive,
     epoch_data_asrt,
+    create_asrt_epochs,
     compute_psd,
     compute_tfr
 )
@@ -216,58 +217,57 @@ def prepare_microstate_analysis(raw, subject_id):
 # Epochs 分析
 # ============================================================
 
-def create_epochs_interactive(raw, subject_id):
+def create_epochs_interactive(raw, subject_id, behavior_df=None, trial_classification='trigger'):
     """
     互動式建立 Epochs
-    
-    來源：main.py process_eeg_data() 第 2092-2124 行（選項 8）
-    抽取：互動式 Epochs 建立邏輯
-    
+
     Parameters
     ----------
     raw : mne.io.Raw
-        Raw 資料物件
     subject_id : str
-        受試者 ID
-    
+    behavior_df : pd.DataFrame or None
+        從 CSV 載入的行為資料（ASRT triplet 分類用）
+    trial_classification : str
+        'trigger' 或 'triplet'（僅 ASRT 模式有效）
+
     Returns
     -------
-    epochs : mne.Epochs
-        建立的 Epochs
-    mode_desc : str
-        模式描述
+    (epochs, mode_desc) tuple
     """
     if raw is None:
         print("⚠️  尚未載入資料，請先載入 EEG 檔案")
         return None, None
-    
+
     try:
-        # 先讓使用者選擇 Epoch 模式
         mode = select_epoch_mode()
-        
+
         if mode == 'fixed':
-            # 固定時間切割（互動式，會問 epoch 長度、threshold）
             epochs = epoch_data_interactive(raw, subject_id)
             mode_desc = "固定時間切割 (互動式參數)"
-        
+
         elif mode == 'event':
-            # 事件鎖定切割（使用 epoch_data 預設參數）
             epochs = epoch_data(raw, subject_id)
             mode_desc = "事件鎖定切割 (預設參數)"
-        
+
         elif mode == 'asrt':
-            # ASRT 任務專用 Epoch 建立（stim/resp + block 結構）
-            epochs = epoch_data_asrt(raw, subject_id)
-            mode_desc = "ASRT 任務專用 Epoch"
-        
+            # ASRT 任務專用：支援 trigger 和 triplet 兩種分類
+            epochs = create_asrt_epochs(
+                raw, subject_id,
+                behavior_df=behavior_df,
+                trial_classification=trial_classification,
+            )
+            if trial_classification == 'triplet':
+                mode_desc = "ASRT Triplet 頻率分類 (high / low)"
+            else:
+                mode_desc = "ASRT 任務專用 Epoch (Regular / Random)"
+
         else:
-            # 理論上不會進來，但安全起見
             print("⚠️ 未知的 epoch 模式，取消建立 Epochs")
             return None, None
-        
+
         print(f"✓ Epochs 建立完成（{mode_desc}）")
         return epochs, mode_desc
-    
+
     except Exception as e:
         print(f"建立 Epochs 時發生錯誤: {str(e)}")
         raise

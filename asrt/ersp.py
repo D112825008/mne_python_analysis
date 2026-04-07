@@ -438,7 +438,7 @@ def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='sti
         if phase.lower() == 'learning':
             # 新結構：results[group_label][trial_type] = power_dict
             for group_label, group_results in results.items():
-                for trial_type in ['Regular', 'Random']:
+                for trial_type in list(group_results.keys()):
                     if trial_type not in group_results:
                         continue
                     power_dict = group_results[trial_type]
@@ -468,7 +468,7 @@ def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='sti
                 for test_type in ['motor', 'perceptual']:
                     if test_type not in group_results:
                         continue
-                    for trial_type in ['Regular', 'Random']:
+                    for trial_type in list(group_results[test_type].keys()):
                         if trial_type not in group_results[test_type]:
                             continue
                         power_dict = group_results[test_type][trial_type]
@@ -546,7 +546,8 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
             print(f"  {'─'*50}")
 
             group_results = {}
-            for trial_type in ['Regular', 'Random']:
+            trial_types = sorted(epochs_group.metadata['trial_type'].dropna().unique().tolist())
+            for trial_type in trial_types:
                 mask = epochs_group.metadata['trial_type'] == trial_type
                 epochs_subset = epochs_group[mask]
 
@@ -568,7 +569,9 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
 
             results[group_label] = group_results
 
-            if 'Regular' in group_results and 'Random' in group_results:
+            available = list(group_results.keys())
+            if len(available) >= 2:
+                cond1, cond2 = available[0], available[1]
                 plot_learning_comparison(
                     group_results, subject_id, lock_type, output_dir,
                     block_label=group_label
@@ -576,7 +579,8 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
     else:
         # 沒有 block 欄位時，fallback 為整體分析
         print(f"  ⚠️  metadata 無 'block' 欄位，改為整體分析")
-        for trial_type in ['Regular', 'Random']:
+        trial_types = sorted(epochs.metadata['trial_type'].dropna().unique().tolist())
+        for trial_type in trial_types:
             mask = epochs.metadata['trial_type'] == trial_type
             epochs_subset = epochs[mask]
             if len(epochs_subset) == 0:
@@ -590,7 +594,8 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
             )
             results[trial_type] = power_dict
 
-        if 'Regular' in results and 'Random' in results:
+        available = list(results.keys())
+        if len(available) >= 2:
             plot_learning_comparison(results, subject_id, lock_type, output_dir)
 
     return results
@@ -648,7 +653,8 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
                 print(f"\n    {test_type.upper()}")
 
                 test_results = {}
-                for trial_type in ['Regular', 'Random']:
+                trial_types = sorted(epochs_group.metadata['trial_type'].dropna().unique().tolist())
+                for trial_type in trial_types:
                     mask = (
                         (epochs_group.metadata['test_type'].str.lower() == test_type.lower()) &
                         (epochs_group.metadata['trial_type'] == trial_type)
@@ -672,7 +678,7 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
                     test_results[trial_type] = power_dict
                     results[group_label][test_type][trial_type] = power_dict
 
-                if 'Regular' in test_results and 'Random' in test_results:
+                if len(test_results) >= 2:
                     plot_testing_comparison(
                         test_results,
                         subject_id,
@@ -684,10 +690,11 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
     else:
         # 沒有 block 欄位時，fallback 為整體分析
         print(f"  ⚠️  metadata 無 'block' 欄位，改為整體分析")
+        trial_types = sorted(epochs.metadata['trial_type'].dropna().unique().tolist())
         for test_type in ['motor', 'perceptual']:
             results[test_type] = {}
             print(f"\n  {test_type.upper()}")
-            for trial_type in ['Regular', 'Random']:
+            for trial_type in trial_types:
                 mask = (
                     (epochs.metadata['test_type'].str.lower() == test_type.lower()) &
                     (epochs.metadata['trial_type'] == trial_type)
@@ -704,7 +711,7 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
                 )
                 results[test_type][trial_type] = power_dict
 
-            if 'Regular' in results[test_type] and 'Random' in results[test_type]:
+            if len(results[test_type]) >= 2:
                 plot_testing_comparison(
                     results[test_type], subject_id, lock_type, test_type, output_dir
                 )

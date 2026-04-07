@@ -14,6 +14,8 @@ EEG 主要處理程式 (Using MNE-Python version 1.8+)
 """
 
 import os
+import re
+import glob as glob_module
 import sys
 from pathlib import Path
 import matplotlib.pyplot as plt
@@ -280,6 +282,91 @@ def select_data_source():
 
 
 # ============================================================
+# CSV 行為資料自動搜尋
+# ============================================================
+
+def _extract_subject_keyword(filepath):
+    """從檔案路徑提取受試者關鍵字（例如 'sub0002'）"""
+    filename = os.path.basename(filepath)
+    match = re.search(r'(sub\d+)', filename, re.IGNORECASE)
+    if match:
+        return match.group(1).lower()
+    parts = os.path.splitext(filename)[0].split('_')
+    return parts[0] if parts else None
+
+
+def _load_behavior_csv(csv_path):
+    """載入 CSV 並只保留 ASRT 分析所需欄位"""
+    NEEDED_COLS = [
+        'learning_loop.thisRepN',
+        'learning_loop.thisTrialN',
+        'learning_trials.thisRepN',
+        'combined_testing_trials.thisTrialN',
+        'correct_answer_index',
+        'key_resp.corr',
+        'key_resp.rt',
+        'learning_seq_files',
+        'test_seq_files',
+        'learning_type',
+    ]
+    try:
+        df = pd.read_csv(csv_path)
+        available = [c for c in NEEDED_COLS if c in df.columns]
+        missing   = [c for c in NEEDED_COLS if c not in df.columns]
+        if missing:
+            print(f"  ⚠  CSV 缺少欄位（略過）: {missing}")
+        df = df[available]
+        print(f"✓ CSV 已載入：{len(df)} 筆資料，{len(available)} 個欄位")
+        return df
+    except Exception as e:
+        print(f"⚠  載入 CSV 失敗: {e}")
+        return None
+
+
+def _auto_search_csv(raw_filepath):
+    """
+    在 raw 檔案所在目錄自動搜尋對應的 CSV 行為資料。
+
+    Returns
+    -------
+    pd.DataFrame or None
+    """
+    subject_keyword = _extract_subject_keyword(raw_filepath)
+    if subject_keyword is None:
+        print("⚠  無法從檔案名提取受試者關鍵字，略過 CSV 搜尋")
+        return None
+
+    csv_dir = os.path.dirname(os.path.abspath(raw_filepath))
+    pattern = os.path.join(csv_dir, f'*{subject_keyword}*.csv')
+    found_csvs = glob_module.glob(pattern)
+
+    if len(found_csvs) == 0:
+        print(f"⚠  找不到對應的 CSV 檔案（關鍵字: {subject_keyword}），triplet 分類功能將無法使用")
+        return None
+
+    if len(found_csvs) == 1:
+        print(f"✓ 找到 CSV：{found_csvs[0]}")
+        confirm = input("確認是否載入？(y/n) [y]: ").strip().lower() or 'y'
+        if confirm == 'y':
+            return _load_behavior_csv(found_csvs[0])
+        return None
+
+    # 找到多個
+    print("找到多個 CSV 檔案，請選擇：")
+    for i, f in enumerate(found_csvs):
+        print(f"  {i+1}. {os.path.basename(f)}")
+    while True:
+        choice_str = input("請輸入編號：").strip()
+        try:
+            idx = int(choice_str) - 1
+            if 0 <= idx < len(found_csvs):
+                return _load_behavior_csv(found_csvs[idx])
+            print(f"⚠  請輸入 1 到 {len(found_csvs)} 之間的數字")
+        except ValueError:
+            print("⚠  請輸入有效的數字")
+
+
+# ============================================================
 # 檔案處理 (部分簡化)
 # 來源：原 main.py 279-449 行
 # 修改：使用 ui.menu.show_epochs_analysis_menu() 和 display_epochs_info_detailed()
@@ -378,7 +465,9 @@ def process_single_file(file_path, file_format):
 
     else:
         # === 如果是 raw，進入正常流程 ===
-        process_eeg_data(subject_id, {'raw': data_obj, 'events': events}, file_path)
+        behavior_df = _auto_search_csv(file_path)
+        process_eeg_data(subject_id, {'raw': data_obj, 'events': events}, file_path,
+                         behavior_df=behavior_df)
 
 
 
@@ -469,7 +558,7 @@ def _load_raw_interactively():
 # 重構：使用 ui.menu, ui.workflows, asrt.workflows 模組
 # ============================================================
 
-def process_eeg_data(subject_id, subject_data, data_path=None):
+def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None):
     """處理選定的受試者 EEG 資料（重構版）"""
     
     # 初始化
@@ -566,7 +655,23 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
         # === Epochs 分析 (選項 7-10) ===
         elif choice == '7':
             try:
-                epochs_result = create_epochs_interactive(current_raw, subject_id)
+                # --- Trial 分類方式選擇 ---
+                print("\nTrial 分類方式:")
+                print("  1. Regular trial / Random trial（根據 trigger code）")
+                print("  2. High-frequency / Low-frequency triplet（需要 CSV 行為資料）")
+
+                if behavior_df is None:
+                    print("  ⚠  尚未載入 CSV，只能選擇選項 1")
+                    trial_classification = 'trigger'
+                else:
+                    cls_choice = input("請選擇 (1/2) [1]: ").strip() or '1'
+                    trial_classification = 'trigger' if cls_choice == '1' else 'triplet'
+
+                epochs_result = create_epochs_interactive(
+                    current_raw, subject_id,
+                    behavior_df=behavior_df,
+                    trial_classification=trial_classification,
+                )
                 if epochs_result[0] is not None:
                     result, mode_desc = epochs_result
                     processing_history.append(f"建立 Epochs - {mode_desc}")
@@ -957,11 +1062,18 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                     print(f"  Epochs: {len(stim_epochs)}")
                     print(f"  儲存群體資料: {'是' if save_for_group else '否'}")
 
+                    print("\n輸出資料夾:")
+                    print(f"  1. Trigger 分類結果 → C:\\Experiment\\ersp_results")
+                    print(f"  2. Triplet 分類結果 → C:\\Experiment\\ersp_results\\triplet")
+                    dir_choice = input("請選擇 (1/2) [1]: ").strip() or '1'
+                    output_dir = r'C:\Experiment\ersp_results\triplet' if dir_choice == '2' else r'C:\Experiment\ersp_results'
+
                     result = asrt_ersp_full_analysis(
                         stim_epochs,
                         subject_id=analysis_sid,
                         phase=phase,
                         lock_type='stimulus',
+                        output_dir=output_dir,
                         save_for_group_analysis=save_for_group,
                         group_data_dir=r'C:\Experiment\Result\h5',
                         do_td_baseline=do_td_baseline,
@@ -1018,9 +1130,6 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
             try:
                 from mne_python_analysis.group_ersp_analysis import auto_group_ersp_analysis
 
-                H5_DIR     = r'C:\Experiment\Result\h5'
-                OUTPUT_DIR = r'C:\Experiment\Result\group_ersp'
-
                 print("\n" + "="*60)
                 print("ASRT 群體分析 (Group-level ERSP)")
                 print("="*60)
@@ -1029,12 +1138,28 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 print("  測試  : Motor + Perceptual  (Testing 階段)")
                 print("  鎖定  : Stimulus-locked + Response-locked")
                 print("  ROI   : Theta + Alpha")
-                print("  比較  : Regular vs Random")
-                print(f"\n資料來源  : {H5_DIR}")
-                print(f"輸出根目錄: {OUTPUT_DIR}")
+
+                print("\n分析類型:")
+                print("  1. Trigger 分類（Regular / Random）")
+                print("  2. Triplet 分類（high / low）")
+                analysis_type = input("請選擇 (1/2) [1]: ").strip() or '1'
+
+                if analysis_type == '2':
+                    H5_DIR     = r'C:\Experiment\Result\triplet\h5'
+                    OUTPUT_DIR = r'C:\Experiment\Result\triplet\group_ersp'
+                    print(f"  → Triplet 分類")
+                    print(f"  → 資料來源：{H5_DIR}")
+                    print(f"  → 輸出：{OUTPUT_DIR}")
+                else:
+                    H5_DIR     = r'C:\Experiment\Result\h5'
+                    OUTPUT_DIR = r'C:\Experiment\Result\group_ersp'
+                    print(f"  → Trigger 分類")
+                    print(f"  → 資料來源：{H5_DIR}")
+                    print(f"  → 輸出：{OUTPUT_DIR}")
+
                 print("\n⚠  資料前置需求：")
                 print("   Stimulus-locked → 先執行選項 15，分析中選「儲存供群體分析用：y」")
-                print("   Response-locked → 先執行選項 17")
+                print("   Response-locked → 先執行選項 16")
 
                 # 輸入受試者 ID
                 print("\n" + "─"*60)
@@ -1171,8 +1296,16 @@ def process_eeg_data(subject_id, subject_data, data_path=None):
                 save_output = input("是否儲存結果？(y/n) [y]: ").strip().lower() or 'y'
                 
                 if save_output == 'y':
-                    _base_dir = input(r"輸出資料夾路徑 [C:\Experiment\Result]: ").strip() or r'C:\Experiment\Result'
+                    is_triplet = (
+                        hasattr(current_epochs, 'metadata') and
+                        current_epochs.metadata is not None and
+                        'classification' in current_epochs.metadata.columns and
+                        current_epochs.metadata['classification'].iloc[0] == 'triplet'
+                    )
+                    default_base = r'C:\Experiment\Result\triplet' if is_triplet else r'C:\Experiment\Result'
+                    _base_dir = input(f"輸出資料夾路徑 [{default_base}]: ").strip() or default_base
                     output_dir = os.path.join(_base_dir, 'h5')
+                    plot_dir_response = _base_dir
 
                     # 受試者 ID
                     subject_id = 'sub'

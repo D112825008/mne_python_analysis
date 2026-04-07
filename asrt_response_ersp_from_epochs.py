@@ -215,7 +215,10 @@ def response_ersp_from_current_epochs(
     has_block     = 'block'     in meta.columns
     has_test_type = 'test_type' in meta.columns and 'phase' in meta.columns
     has_trial_type = 'trial_type' in meta.columns
-    trial_types = ['Regular', 'Random'] if has_trial_type else ['All']
+    if has_trial_type:
+        trial_types = sorted(response_epochs.metadata['trial_type'].dropna().unique().tolist())
+    else:
+        trial_types = ['All']
 
     results = {}
 
@@ -361,15 +364,16 @@ def response_ersp_from_current_epochs(
                         plot_dir,
                     )
 
-                if 'Regular' in power_dicts and 'Random' in power_dicts:
+                cond1, cond2 = (trial_types[0], trial_types[1]) if len(trial_types) >= 2 else (None, None)
+                if cond1 in power_dicts and cond2 in power_dicts:
                     parts       = key.split('_', 1)
                     cond_name   = parts[0]
                     group_label = parts[1] if len(parts) > 1 else None
 
                     if cond_name == 'Learning':
                         plot_learning_comparison(
-                            {'Regular': power_dicts['Regular'],
-                             'Random':  power_dicts['Random']},
+                            {cond1: power_dicts[cond1],
+                             cond2: power_dicts[cond2]},
                             subject_id=subject_id,
                             lock_type='response',
                             output_dir=plot_dir,
@@ -377,8 +381,8 @@ def response_ersp_from_current_epochs(
                         )
                     elif cond_name == 'MotorTest':
                         plot_testing_comparison(
-                            {'Regular': power_dicts['Regular'],
-                             'Random':  power_dicts['Random']},
+                            {cond1: power_dicts[cond1],
+                             cond2: power_dicts[cond2]},
                             subject_id=subject_id,
                             lock_type='response',
                             test_type='motor',
@@ -387,8 +391,8 @@ def response_ersp_from_current_epochs(
                         )
                     elif cond_name == 'PerceptualTest':
                         plot_testing_comparison(
-                            {'Regular': power_dicts['Regular'],
-                             'Random':  power_dicts['Random']},
+                            {cond1: power_dicts[cond1],
+                             cond2: power_dicts[cond2]},
                             subject_id=subject_id,
                             lock_type='response',
                             test_type='perceptual',

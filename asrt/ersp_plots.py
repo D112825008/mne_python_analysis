@@ -140,17 +140,19 @@ def plot_learning_comparison(results, subject_id, lock_type, output_dir, block_l
     _block_suffix = f"_{block_label}" if block_label else ""
     _block_str    = f" | {block_label}" if block_label else ""
 
-    roi_names = list(results['Regular'].keys())
+    cond_keys = list(results.keys())
+    cond1, cond2 = cond_keys[0], cond_keys[1]
+    roi_names = list(results[cond1].keys())
 
     for roi_name in roi_names:
-        regular_data = results['Regular'][roi_name]
-        random_data  = results['Random'][roi_name]
+        regular_data = results[cond1][roi_name]
+        random_data  = results[cond2][roi_name]
 
         times = regular_data['times'] * 1000
         freqs = regular_data['freqs']
         diff_power = regular_data['power'] - random_data['power']
 
-        # 共用 colorbar 範圍（Regular / Random）
+        # 共用 colorbar 範圍（cond1 / cond2）
         vmax_cond = max(abs(regular_data['power']).max(),
                         abs(random_data['power']).max())
         vmin_cond = -vmax_cond
@@ -172,14 +174,14 @@ def plot_learning_comparison(results, subject_id, lock_type, output_dir, block_l
             ax.set_ylim([freqs[0], freqs[-1]])
             return im
 
-        im1 = _panel(axes[0], regular_data['power'], 'Regular', vmin_cond, vmax_cond)
+        im1 = _panel(axes[0], regular_data['power'], cond1, vmin_cond, vmax_cond)
         plt.colorbar(im1, ax=axes[0], label='Power (dB)')
 
-        im2 = _panel(axes[1], random_data['power'], 'Random', vmin_cond, vmax_cond)
+        im2 = _panel(axes[1], random_data['power'], cond2, vmin_cond, vmax_cond)
         plt.colorbar(im2, ax=axes[1], label='Power (dB)')
 
         im3 = _panel(axes[2], diff_power,
-                     'Difference (Regular - Random)', vmin_diff, vmax_diff, xlabel=True)
+                     f'Difference ({cond1} - {cond2})', vmin_diff, vmax_diff, xlabel=True)
         plt.colorbar(im3, ax=axes[2], label='Power diff (dB)')
 
         fig.suptitle(
@@ -212,11 +214,13 @@ def plot_testing_comparison(test_results, subject_id, lock_type, test_type, outp
     _block_str    = f" | {block_label}" if block_label else ""
     phase_label   = f"Testing: {test_type.capitalize()}"
 
-    roi_names = list(test_results['Regular'].keys())
+    cond_keys = list(test_results.keys())
+    cond1, cond2 = cond_keys[0], cond_keys[1]
+    roi_names = list(test_results[cond1].keys())
 
     for roi_name in roi_names:
-        regular_data = test_results['Regular'][roi_name]
-        random_data  = test_results['Random'][roi_name]
+        regular_data = test_results[cond1][roi_name]
+        random_data  = test_results[cond2][roi_name]
 
         times = regular_data['times'] * 1000
         freqs = regular_data['freqs']
@@ -242,14 +246,14 @@ def plot_testing_comparison(test_results, subject_id, lock_type, test_type, outp
             ax.set_ylim([freqs[0], freqs[-1]])
             return im
 
-        im1 = _panel(axes[0], regular_data['power'], 'Regular', vmin_cond, vmax_cond)
+        im1 = _panel(axes[0], regular_data['power'], cond1, vmin_cond, vmax_cond)
         plt.colorbar(im1, ax=axes[0], label='Power (dB)')
 
-        im2 = _panel(axes[1], random_data['power'], 'Random', vmin_cond, vmax_cond)
+        im2 = _panel(axes[1], random_data['power'], cond2, vmin_cond, vmax_cond)
         plt.colorbar(im2, ax=axes[1], label='Power (dB)')
 
         im3 = _panel(axes[2], diff_power,
-                     'Difference (Regular - Random)', vmin_diff, vmax_diff, xlabel=True)
+                     f'Difference ({cond1} - {cond2})', vmin_diff, vmax_diff, xlabel=True)
         plt.colorbar(im3, ax=axes[2], label='Power diff (dB)')
 
         fig.suptitle(

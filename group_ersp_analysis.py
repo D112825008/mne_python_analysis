@@ -11,6 +11,7 @@ Block 分組結構與個人分析完全一致：
 版本: 2.0
 """
 
+import os
 import numpy as np
 import matplotlib
 
@@ -664,10 +665,25 @@ def auto_group_ersp_analysis(subject_ids,
 
     total = len(combos)
 
+    # 自動偵測 trial_type 條件名稱
+    import glob as _glob
+    detected_types = []
+    sample_files = _glob.glob(os.path.join(data_dir, f'{subject_ids[0]}_Response_*.h5'))
+    for f in sample_files:
+        parts = os.path.basename(f).replace('_ERSP.h5', '').split('_')
+        tt = parts[-1]
+        if tt not in detected_types:
+            detected_types.append(tt)
+    if len(detected_types) >= 2:
+        condition1, condition2 = detected_types[0], detected_types[1]
+    else:
+        condition1, condition2 = 'Regular', 'Random'  # fallback
+
     print("\n" + "=" * 70)
     print("Group ERSP Auto Analysis  v2.0")
     print("=" * 70)
     print(f"Subjects (N={len(subject_ids)}): {subject_ids}")
+    print(f"Conditions detected: {condition1} vs {condition2}")
     print(f"Data source: {data_dir}")
     print(f"Output root: {output_dir}")
     print(f"Permutation Test: {'Yes' if do_permutation_test else 'No'}")
@@ -695,8 +711,8 @@ def auto_group_ersp_analysis(subject_ids,
         try:
             result = group_ersp_analysis(
                 subject_ids         = subject_ids,
-                condition1          = 'Regular',
-                condition2          = 'Random',
+                condition1          = condition1,
+                condition2          = condition2,
                 phase               = phase,
                 lock_type           = lock_type,
                 roi_name            = roi_name,
