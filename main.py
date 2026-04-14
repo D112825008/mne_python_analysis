@@ -296,12 +296,14 @@ def _extract_subject_keyword(filepath):
 
 
 def _load_behavior_csv(csv_path):
-    """載入 CSV 並只保留 ASRT 分析所需欄位"""
+    """載入完整行為 CSV"""
     NEEDED_COLS = [
         'learning_loop.thisRepN',
         'learning_loop.thisTrialN',
         'learning_trials.thisRepN',
+        'learning_trials.thisTrialN',
         'combined_testing_trials.thisTrialN',
+        'motor_percept_testing_loop.thisTrialN',
         'correct_answer_index',
         'key_resp.corr',
         'key_resp.rt',
@@ -311,12 +313,10 @@ def _load_behavior_csv(csv_path):
     ]
     try:
         df = pd.read_csv(csv_path)
-        available = [c for c in NEEDED_COLS if c in df.columns]
-        missing   = [c for c in NEEDED_COLS if c not in df.columns]
+        missing = [c for c in NEEDED_COLS if c not in df.columns]
         if missing:
             print(f"  ⚠  CSV 缺少欄位（略過）: {missing}")
-        df = df[available]
-        print(f"✓ CSV 已載入：{len(df)} 筆資料，{len(available)} 個欄位")
+        print(f"✓ CSV 已載入：{len(df)} 筆資料，{len(df.columns)} 個欄位")
         return df
     except Exception as e:
         print(f"⚠  載入 CSV 失敗: {e}")
@@ -1039,6 +1039,12 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                 bl_choice = input("請選擇 (1/2) [1]: ").strip() or '1'
                 do_td_baseline = bl_choice == '2'
 
+                print("\nBaseline 方法:")
+                print("  1. 固定時間窗口（pre-stimulus blank 期）")
+                print("  2. 整段 epoch 平均（Lum et al. 2023）")
+                bl_method_choice = input("請選擇 (1/2) [1]: ").strip() or '1'
+                baseline_method = 'whole_epoch' if bl_method_choice == '2' else 'pre_stim'
+
                 # ── 群體分析選項 ──
                 print("\n" + "─"*60)
                 print("群體分析選項：")
@@ -1077,6 +1083,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                         save_for_group_analysis=save_for_group,
                         group_data_dir=r'C:\Experiment\Result\h5',
                         do_td_baseline=do_td_baseline,
+                        baseline_method=baseline_method,
                     )
 
                     if result:
@@ -1145,16 +1152,20 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                 analysis_type = input("請選擇 (1/2) [1]: ").strip() or '1'
 
                 if analysis_type == '2':
-                    H5_DIR     = r'C:\Experiment\Result\triplet\h5'
+                    PKL_DIR    = r'C:\Experiment\Result\h5'
+                    H5_DIR     = r'C:\Experiment\Result\h5'
                     OUTPUT_DIR = r'C:\Experiment\Result\triplet\group_ersp'
                     print(f"  → Triplet 分類")
-                    print(f"  → 資料來源：{H5_DIR}")
+                    print(f"  → Stimulus 資料來源：{PKL_DIR}")
+                    print(f"  → Response 資料來源：{H5_DIR}")
                     print(f"  → 輸出：{OUTPUT_DIR}")
                 else:
+                    PKL_DIR    = r'C:\Experiment\Result\h5'
                     H5_DIR     = r'C:\Experiment\Result\h5'
                     OUTPUT_DIR = r'C:\Experiment\Result\group_ersp'
                     print(f"  → Trigger 分類")
-                    print(f"  → 資料來源：{H5_DIR}")
+                    print(f"  → Stimulus 資料來源：{PKL_DIR}")
+                    print(f"  → Response 資料來源：{H5_DIR}")
                     print(f"  → 輸出：{OUTPUT_DIR}")
 
                 print("\n⚠  資料前置需求：")
@@ -1191,7 +1202,8 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
 
                 results = auto_group_ersp_analysis(
                     subject_ids         = subject_ids,
-                    data_dir            = H5_DIR,
+                    pkl_dir             = PKL_DIR,
+                    h5_dir              = H5_DIR,
                     output_dir          = OUTPUT_DIR,
                     do_permutation_test = do_permutation,
                     n_permutations      = 1000,
@@ -1286,6 +1298,12 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                 bl_choice = input("請選擇 (1/2) [1]: ").strip() or '1'
                 do_td_baseline = bl_choice == '2'
 
+                print("\nBaseline 方法:")
+                print("  1. Per-trial pre-stimulus blank 期（目前做法）")
+                print("  2. 整段 epoch 平均（Lum et al. 2023）")
+                bl_method_choice = input("請選擇 (1/2) [1]: ").strip() or '1'
+                baseline_method = 'whole_epoch' if bl_method_choice == '2' else 'pre_stim'
+
                 # 平行處理
                 print("\n平行處理:")
                 print("  建議: n_jobs=1（避免 Windows GIL 問題）")
@@ -1328,6 +1346,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                     output_dir=output_dir,
                     subject_id=subject_id,
                     do_td_baseline=do_td_baseline,
+                    baseline_method=baseline_method,
                 )
                 
                 # ===== 繪圖 =====
@@ -1407,6 +1426,387 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                 import traceback
                 traceback.print_exc()
         
+        elif choice == '20':
+            # 輸出 RT 資料到 CSV
+            print("\n" + "="*60)
+            print("輸出 RT 資料到 CSV")
+            print("="*60)
+
+            print("\n分類方式:")
+            print("  1. Trigger 分類（Regular / Random）")
+            print("  2. Triplet 分類（high / low）")
+            cls_choice = input("請選擇 (1/2) [1]: ").strip() or '1'
+            is_triplet = (cls_choice == '2')
+            test_type = 'triplet' if is_triplet else 'trigger'
+
+            import re as _re_rt
+            _base_sid = _re_rt.sub(
+                r'[_-](resp|stim|ASRT)[_-].*$', '', subject_id, flags=_re_rt.IGNORECASE
+            ).rstrip('_-') or subject_id
+
+            def _load_epoch_interactive(search_patterns, label, exclude_trip=False):
+                """搜尋並讓使用者確認載入 epoch 檔案，回傳 Epochs 物件或 None"""
+                found = []
+                for pat in search_patterns:
+                    candidates = glob_module.glob(pat)
+                    if exclude_trip:
+                        candidates = [f for f in candidates if 'trip' not in os.path.basename(f).lower()]
+                    if candidates:
+                        found = candidates
+                        break
+                if found:
+                    if len(found) > 1:
+                        print(f"\n找到多個 {label} 檔案，請選擇：")
+                        for i, f in enumerate(found):
+                            print(f"  {i+1}. {f}")
+                        sel = input("請輸入編號 [1]: ").strip()
+                        try:
+                            path = found[int(sel) - 1] if sel else found[0]
+                        except (ValueError, IndexError):
+                            path = found[0]
+                    else:
+                        path = found[0]
+                        print(f"\n自動找到 {label}: {path}")
+                    print("載入中...")
+                    epo = mne.read_epochs(path, preload=False)
+                    print(f"✓ 載入完成：{len(epo)} 個 epochs")
+                    return epo
+                else:
+                    print(f"\n⚠️  找不到 {label}（搜尋模式: {search_patterns[:2]}...）")
+                    manual = input(f"請手動輸入路徑（Enter 跳過）: ").strip().strip('"')
+                    if manual:
+                        if not os.path.exists(manual):
+                            print(f"❌ 找不到檔案: {manual}")
+                            return None
+                        epo = mne.read_epochs(manual, preload=False)
+                        print(f"✓ 載入完成：{len(epo)} 個 epochs")
+                        return epo
+                    return None
+
+            if is_triplet:
+                # === Triplet 分類：直接從 metadata join，不做時間 matching ===
+
+                default_sid = subject_id if subject_id else 'sub'
+                sid = input(f"\n受試者 ID [{default_sid}]: ").strip() or default_sid
+
+                rt_epochs = _load_epoch_interactive([
+                    f"*{_base_sid}*resp*triplet*-epo.fif",
+                    f"*{_base_sid}*resp*trip*-epo.fif",
+                    f"*resp*triplet*-epo.fif",
+                    f"*resp*trip*-epo.fif",
+                ], label="Triplet resp Epochs")
+
+                if rt_epochs is None:
+                    if current_epochs is None:
+                        print("\n⚠️  沒有可用的 Epochs，無法繼續")
+                        continue
+                    rt_epochs = current_epochs
+                    print("⚠️  使用已載入的 epochs")
+
+                if not hasattr(rt_epochs, 'metadata') or rt_epochs.metadata is None:
+                    print("\n⚠️  Epochs 沒有 metadata")
+                    continue
+
+                meta = rt_epochs.metadata
+                required_cols = {'block', 'trial_in_block', 'stim_sample', 'resp_sample', 'trial_type'}
+                missing = required_cols - set(meta.columns)
+                if missing:
+                    print(f"\n⚠️  metadata 缺少欄位: {missing}")
+                    continue
+
+                sfreq = rt_epochs.info['sfreq']
+
+                # ── EEG lookup {(block, trial_in_block): dict} ───────────────
+                eeg_lookup = {}
+                for _, row in meta.iterrows():
+                    blk = int(row['block'])
+                    tib = int(row['trial_in_block'])
+                    if tib == -1:
+                        continue
+                    eeg_lookup[(blk, tib)] = {
+                        'trial_type':       row['trial_type'],
+                        'eeg_stim_time_s':  float(row['stim_sample']) / sfreq,
+                        'eeg_resp_time_s':  float(row['resp_sample']) / sfreq,
+                        'rt_eeg_ms':        (float(row['resp_sample']) - float(row['stim_sample'])) / sfreq * 1000,
+                    }
+                print(f"  EEG lookup：{len(eeg_lookup)} trials")
+
+                # ── 載入行為資料 CSV ─────────────────────────────────────────
+                behav_path = input("請輸入行為資料 CSV 路徑: ").strip().strip('"')
+                if not os.path.exists(behav_path):
+                    print(f"❌ 找不到檔案: {behav_path}")
+                    continue
+                try:
+                    behav_raw = pd.read_csv(behav_path)
+                except Exception as _e:
+                    print(f"❌ 讀取失敗: {_e}")
+                    continue
+
+                # ── 建立行為資料表（只取 triplet epoch 有的 block 範圍）───────
+                _learn_trial_col = 'learning_loop.thisTrialN'
+                _learn_block_col = 'learning_trials.thisTrialN'
+                _test_block_col  = 'combined_testing_trials.thisTrialN'
+                _test_loop_cols  = ['percept_motor_testing_loop.thisTrialN',
+                                    'motor_percept_testing_loop.thisTrialN']
+                _test_trial_col  = next((c for c in _test_loop_cols if c in behav_raw.columns), None)
+
+                behav_rows = []
+                if _learn_trial_col in behav_raw.columns and _learn_block_col in behav_raw.columns:
+                    lmask = behav_raw[_learn_trial_col].notna() & behav_raw[_learn_block_col].notna()
+                    for _, r in behav_raw[lmask].iterrows():
+                        blk     = int(float(r[_learn_block_col])) + 7
+                        tib     = int(float(r[_learn_trial_col]))
+                        rt_b    = pd.to_numeric(r.get('key_resp.rt'),       errors='coerce')
+                        arrow_s = pd.to_numeric(r.get('arrowhead.started'), errors='coerce')
+                        behav_rows.append({
+                            'phase': 'Learning', 'block': blk, 'trial_in_block': tib,
+                            'beh_stim_time_s':   float(arrow_s)        if pd.notna(arrow_s)                    else None,
+                            'beh_resp_time_s':   float(arrow_s + rt_b) if pd.notna(arrow_s) and pd.notna(rt_b) else None,
+                            'rt_behavioral_ms':  float(rt_b) * 1000    if pd.notna(rt_b)                        else None,
+                        })
+
+                if _test_block_col in behav_raw.columns and _test_trial_col is not None:
+                    tmask = behav_raw[_test_block_col].notna() & behav_raw[_test_trial_col].notna()
+                    for _, r in behav_raw[tmask].iterrows():
+                        blk     = int(float(r[_test_block_col])) + 27
+                        tib     = int(float(r[_test_trial_col]))
+                        rt_b    = pd.to_numeric(r.get('key_resp.rt'),       errors='coerce')
+                        arrow_s = pd.to_numeric(r.get('arrowhead.started'), errors='coerce')
+                        behav_rows.append({
+                            'phase': 'Test', 'block': blk, 'trial_in_block': tib,
+                            'beh_stim_time_s':   float(arrow_s)        if pd.notna(arrow_s)                    else None,
+                            'beh_resp_time_s':   float(arrow_s + rt_b) if pd.notna(arrow_s) and pd.notna(rt_b) else None,
+                            'rt_behavioral_ms':  float(rt_b) * 1000    if pd.notna(rt_b)                        else None,
+                        })
+
+                behav_df = pd.DataFrame(behav_rows).sort_values(['block', 'trial_in_block']).reset_index(drop=True)
+
+                # ── 合併（以 EEG triplet epoch 為主軸，triplet epoch 才有 trial_type）──
+                result_rows = []
+                for (blk, tib), eeg in eeg_lookup.items():
+                    bkey = behav_df[(behav_df['block'] == blk) & (behav_df['trial_in_block'] == tib)]
+                    brow = bkey.iloc[0] if len(bkey) > 0 else None
+                    result_rows.append({
+                        'sid':              sid,
+                        'phase':            'Learning' if blk <= 26 else 'Test',
+                        'block':            blk,
+                        'trial_in_block':   tib,
+                        'trial_type':       eeg['trial_type'],
+                        'eeg_stim_time_s':  eeg['eeg_stim_time_s'],
+                        'eeg_resp_time_s':  eeg['eeg_resp_time_s'],
+                        'rt_eeg_ms':        eeg['rt_eeg_ms'],
+                        'beh_stim_time_s':  float(brow['beh_stim_time_s'])  if brow is not None and brow['beh_stim_time_s']  is not None else None,
+                        'beh_resp_time_s':  float(brow['beh_resp_time_s'])  if brow is not None and brow['beh_resp_time_s']  is not None else None,
+                        'rt_behavioral_ms': float(brow['rt_behavioral_ms']) if brow is not None and brow['rt_behavioral_ms'] is not None else None,
+                    })
+
+                df = pd.DataFrame(result_rows)[[
+                    'sid', 'phase', 'block', 'trial_in_block', 'trial_type',
+                    'eeg_stim_time_s', 'eeg_resp_time_s', 'rt_eeg_ms',
+                    'beh_stim_time_s', 'beh_resp_time_s', 'rt_behavioral_ms'
+                ]].sort_values(['block', 'trial_in_block']).reset_index(drop=True)
+
+                n_both   = df['rt_eeg_ms'].notna().sum()
+                n_miss_b = df['rt_behavioral_ms'].isna().sum()
+
+                print(f"\n  合計：{len(df)} trials")
+                print(f"  EEG + 行為都有：{n_both}")
+                print(f"  Miss trials（行為無作答）：{n_miss_b}")
+
+                out_dir  = r'C:\Experiment\ersp_csv\triplet\rt_data'
+                out_file = os.path.join(out_dir, f'{sid}_rt_triplet.csv')
+                os.makedirs(out_dir, exist_ok=True)
+                df.to_csv(out_file, index=False)
+                print(f"\n✓ 已輸出 {len(df)} 筆")
+                print(f"  → {out_file}")
+                processing_history.append(f"輸出 RT 驗證 CSV（triplet，{sid}）")
+
+            else:
+                # === Trigger 分類：直接從 metadata + 行為資料 join，不做時間 matching ===
+
+                default_sid = subject_id if subject_id else 'sub'
+                sid = input(f"\n受試者 ID [{default_sid}]: ").strip() or default_sid
+
+                behav_path = input("請輸入行為資料 CSV 路徑: ").strip().strip('"')
+                if not os.path.exists(behav_path):
+                    print(f"❌ 找不到檔案: {behav_path}")
+                    continue
+                try:
+                    behav_raw = pd.read_csv(behav_path)
+                except Exception as _e:
+                    print(f"❌ 讀取失敗: {_e}")
+                    continue
+
+                # ── 建立行為資料表 ────────────────────────────────────────────
+                _learn_trial_col = 'learning_loop.thisTrialN'    # trial in block (0-84)
+                _learn_block_col = 'learning_trials.thisTrialN'  # block index (0-19) → +7
+                _test_block_col  = 'combined_testing_trials.thisTrialN'  # (0-7) → +27
+                _test_loop_cols  = ['percept_motor_testing_loop.thisTrialN',
+                                    'motor_percept_testing_loop.thisTrialN']
+                _test_trial_col  = next((c for c in _test_loop_cols if c in behav_raw.columns), None)
+
+                behav_rows = []
+
+                if _learn_trial_col in behav_raw.columns and _learn_block_col in behav_raw.columns:
+                    lmask = behav_raw[_learn_trial_col].notna() & behav_raw[_learn_block_col].notna()
+                    for _, r in behav_raw[lmask].iterrows():
+                        blk     = int(float(r[_learn_block_col])) + 7
+                        tib     = int(float(r[_learn_trial_col]))
+                        rt_b    = pd.to_numeric(r.get('key_resp.rt'),       errors='coerce')
+                        arrow_s = pd.to_numeric(r.get('arrowhead.started'), errors='coerce')
+                        color   = r.get('arrow_color', '')
+                        behav_rows.append({
+                            'phase': 'Learning', 'block': blk, 'trial_in_block': tib,
+                            'trial_type':        'Regular' if color == 'white' else ('Random' if color == 'red' else None),
+                            'beh_stim_time_s':   float(arrow_s)        if pd.notna(arrow_s)                    else None,
+                            'beh_resp_time_s':   float(arrow_s + rt_b) if pd.notna(arrow_s) and pd.notna(rt_b) else None,
+                            'rt_behavioral_ms':  float(rt_b) * 1000    if pd.notna(rt_b)                        else None,
+                        })
+
+                if _test_block_col in behav_raw.columns and _test_trial_col is not None:
+                    tmask = behav_raw[_test_block_col].notna() & behav_raw[_test_trial_col].notna()
+                    for _, r in behav_raw[tmask].iterrows():
+                        blk     = int(float(r[_test_block_col])) + 27
+                        tib     = int(float(r[_test_trial_col]))
+                        rt_b    = pd.to_numeric(r.get('key_resp.rt'),       errors='coerce')
+                        arrow_s = pd.to_numeric(r.get('arrowhead.started'), errors='coerce')
+                        color   = r.get('arrow_color', '')
+                        behav_rows.append({
+                            'phase': 'Test', 'block': blk, 'trial_in_block': tib,
+                            'trial_type':        'Regular' if color == 'white' else ('Random' if color == 'red' else None),
+                            'beh_stim_time_s':   float(arrow_s)        if pd.notna(arrow_s)                    else None,
+                            'beh_resp_time_s':   float(arrow_s + rt_b) if pd.notna(arrow_s) and pd.notna(rt_b) else None,
+                            'rt_behavioral_ms':  float(rt_b) * 1000    if pd.notna(rt_b)                        else None,
+                        })
+
+                if not behav_rows:
+                    print("❌ 行為資料解析失敗，找不到 learning_loop / testing_loop 欄位")
+                    continue
+
+                behav_df = (pd.DataFrame(behav_rows)
+                              .sort_values(['block', 'trial_in_block'])
+                              .reset_index(drop=True))
+                print(f"\n  行為資料：{len(behav_df)} trials"
+                      f"（Learning: {(behav_df['phase']=='Learning').sum()}，"
+                      f"Test: {(behav_df['phase']=='Test').sum()}）")
+                print(f"  Miss trials（無作答）：{behav_df['rt_behavioral_ms'].isna().sum()}")
+
+                # ── 載入 Response epoch ───────────────────────────────────────
+                resp_epo = _load_epoch_interactive([
+                    f"*{_base_sid}*ASRT*resp*all-epo.fif",
+                    f"*{_base_sid}*ASRT*resp*learn-epo.fif",
+                    f"*{_base_sid}*ASRT*resp*test-epo.fif",
+                    f"*{_base_sid}*resp*all-epo.fif",
+                    f"*{_base_sid}*resp*learn-epo.fif",
+                    f"*{_base_sid}*resp*-epo.fif",
+                    f"*ASRT*resp*all-epo.fif",
+                    f"*resp*-epo.fif",
+                ], label="Response Epochs (trigger)", exclude_trip=True)
+
+                if resp_epo is None:
+                    print("❌ 無法載入 Response epochs")
+                    continue
+
+                resp_meta = resp_epo.metadata.copy()
+                _req  = {'block', 'trial_in_block', 'stim_sample', 'resp_sample'}
+                _miss = _req - set(resp_meta.columns)
+                if _miss:
+                    print(f"❌ metadata 缺少欄位：{_miss}")
+                    continue
+
+                sfreq = resp_epo.info['sfreq']
+                n_invalid = (resp_meta['trial_in_block'] == -1).sum()
+                if n_invalid:
+                    print(f"  ⚠️  {n_invalid} 筆 trial_in_block = -1（stim_sample 查無對應），略過")
+
+                # ── 建立 EEG lookup {(block, trial_in_block): dict} ──────────
+                eeg_lookup = {}
+                for _, row in resp_meta.iterrows():
+                    blk = int(row['block'])
+                    tib = int(row['trial_in_block'])
+                    if tib == -1:
+                        continue
+                    eeg_lookup[(blk, tib)] = {
+                        'eeg_stim_time_s': float(row['stim_sample']) / sfreq,
+                        'eeg_resp_time_s': float(row['resp_sample']) / sfreq,
+                        'rt_eeg_ms':       (float(row['resp_sample']) - float(row['stim_sample'])) / sfreq * 1000,
+                    }
+                print(f"  EEG lookup：{len(eeg_lookup)} trials")
+
+                # ── 補齊 miss trial 的 eeg_stim_time_s（從 Stimulus epoch 取）──
+                stim_epo = _load_epoch_interactive([
+                    f"*{_base_sid}*ASRT*stim*all-epo.fif",
+                    f"*{_base_sid}*ASRT*stim*learn-epo.fif",
+                    f"*{_base_sid}*stim*all-epo.fif",
+                    f"*{_base_sid}*stim*-epo.fif",
+                    f"*ASRT*stim*all-epo.fif",
+                ], label="Stimulus Epochs (補 miss trial stim time)", exclude_trip=True)
+
+                eeg_stim_lookup = {}  # {(block, trial_in_block): stim_time_s}
+                if stim_epo is not None:
+                    stim_meta = stim_epo.metadata.copy()
+                    stim_events = stim_epo.events[:, 0]  # stim sample = epoch event sample
+                    stim_sfreq = stim_epo.info['sfreq']
+
+                    # trial_in_block = 在同一 block 內的出現順序（0-based）
+                    stim_meta = stim_meta.copy()
+                    stim_meta['_stim_sample'] = stim_events
+                    stim_meta['_tib'] = (stim_meta
+                                         .groupby('block', sort=False)
+                                         .cumcount())
+
+                    for _, row in stim_meta.iterrows():
+                        key = (int(row['block']), int(row['_tib']))
+                        eeg_stim_lookup[key] = float(row['_stim_sample']) / stim_sfreq
+
+                    print(f"  Stimulus lookup：{len(eeg_stim_lookup)} trials")
+                else:
+                    print("  ⚠️  未載入 Stimulus epochs，miss trial 的 eeg_stim_time_s 將為 None")
+
+                # ── 合併（以行為資料為主軸）──────────────────────────────────
+                result_rows = []
+                for _, brow in behav_df.iterrows():
+                    key = (int(brow['block']), int(brow['trial_in_block']))
+                    eeg = eeg_lookup.get(key)
+                    # miss trial 優先從 stim_lookup 取，有 resp 的從 eeg_lookup 取
+                    _eeg_stim = eeg['eeg_stim_time_s'] if eeg else eeg_stim_lookup.get(key)
+                    result_rows.append({
+                        'sid':              sid,
+                        'phase':            brow['phase'],
+                        'block':            brow['block'],
+                        'trial_in_block':   brow['trial_in_block'],
+                        'trial_type':       brow['trial_type'],
+                        'eeg_stim_time_s':  _eeg_stim,
+                        'eeg_resp_time_s':  eeg['eeg_resp_time_s'] if eeg else None,
+                        'rt_eeg_ms':        eeg['rt_eeg_ms']        if eeg else None,
+                        'beh_stim_time_s':  brow['beh_stim_time_s'],
+                        'beh_resp_time_s':  brow['beh_resp_time_s'],
+                        'rt_behavioral_ms': brow['rt_behavioral_ms'],
+                    })
+
+                df = pd.DataFrame(result_rows)[[
+                    'sid', 'phase', 'block', 'trial_in_block', 'trial_type',
+                    'eeg_stim_time_s', 'eeg_resp_time_s', 'rt_eeg_ms',
+                    'beh_stim_time_s', 'beh_resp_time_s', 'rt_behavioral_ms'
+                ]]
+
+                n_both   = df['rt_eeg_ms'].notna().sum()
+                n_miss_b = df['rt_behavioral_ms'].isna().sum()
+                n_no_eeg = (df['rt_eeg_ms'].isna() & df['rt_behavioral_ms'].notna()).sum()
+
+                print(f"\n  合計：{len(df)} trials")
+                print(f"  EEG + 行為都有：{n_both}")
+                print(f"  Miss trials（行為無作答）：{n_miss_b}")
+                print(f"  行為有作答但 EEG 無配對（artifact rejected 或 trial_in_block 錯誤）：{n_no_eeg}")
+
+                out_dir  = r'C:\Experiment\ersp_csv\trigger\rt_data'
+                out_file = os.path.join(out_dir, f'{sid}_rt_trigger.csv')
+                os.makedirs(out_dir, exist_ok=True)
+                df.to_csv(out_file, index=False)
+                print(f"\n✓ 已輸出 {len(df)} 筆")
+                print(f"  → {out_file}")
+                processing_history.append(f"輸出 RT 驗證 CSV（trigger，{sid}）")
+
         # === 儲存與退出 (選項 12-14, 0) ===
         # 來源：原 main.py 2426-2465 行
         elif choice == '12':

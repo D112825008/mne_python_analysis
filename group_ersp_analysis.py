@@ -160,23 +160,27 @@ def _load_h5_response(filepath, roi_name):
     return power, freqs, times
 
 
-def _find_and_load(data_dir, subject_id, lock_type, phase,
-                   test_type, group_label, trial_type, roi_name):
+def _find_and_load(pkl_dir, subject_id, lock_type, phase,
+                   test_type, group_label, trial_type, roi_name,
+                   h5_dir=None):
     """
     載入單一受試者、單一 Block 組的 ERSP 資料。
     （Learning 用；Testing 請用 _load_subject_testing_pooled）
 
-    Stimulus lock → .pkl
+    Stimulus lock → .pkl（從 pkl_dir 讀取）
       Learning : {sub}_learning_stimulus_{roi}_{trial}_{block}_ersp.pkl
 
-    Response lock → h5py 格式
+    Response lock → h5py 格式（從 h5_dir 讀取，若未提供則沿用 pkl_dir）
       Learning : {sub}_Response_Learning_{block}_{trial}_ERSP.h5
 
     Returns
     -------
     (ersp_2d, freqs, times)
     """
-    data_path = Path(data_dir)
+    if lock_type == 'stimulus':
+        data_path = Path(pkl_dir)
+    else:
+        data_path = Path(h5_dir) if h5_dir is not None else Path(pkl_dir)
     roi_lower = roi_name.lower()
 
     if lock_type == 'stimulus':
@@ -204,9 +208,9 @@ def _extract_block_num(filepath):
     return int(m.group(1)) if m else 9999
 
 
-def _load_subject_testing_pair(data_dir, subject_id, lock_type,
+def _load_subject_testing_pair(pkl_dir, subject_id, lock_type,
                                 test_type, trial_type, roi_name,
-                                pair='first'):
+                                pair='first', h5_dir=None):
     """
     Testing 階段（反平衡設計）：
 
@@ -222,7 +226,10 @@ def _load_subject_testing_pair(data_dir, subject_id, lock_type,
     -------
     (ersp_2d, freqs, times, block_names)
     """
-    data_path = Path(data_dir)
+    if lock_type == 'stimulus':
+        data_path = Path(pkl_dir)
+    else:
+        data_path = Path(h5_dir) if h5_dir is not None else Path(pkl_dir)
     roi_lower = roi_name.lower()
     cond_name = 'MotorTest' if test_type == 'motor' else 'PerceptualTest'
 
@@ -278,8 +285,9 @@ def _load_subject_testing_pair(data_dir, subject_id, lock_type,
 # 3. 批次載入多位受試者
 # ============================================================
 
-def _load_group_data(subject_ids, data_dir, lock_type, phase,
-                     test_type, group_label, trial_type, roi_name):
+def _load_group_data(subject_ids, pkl_dir, lock_type, phase,
+                     test_type, group_label, trial_type, roi_name,
+                     h5_dir=None):
     """
     載入所有受試者在某個條件（某個 Block 組）的 ERSP。
 
@@ -297,8 +305,9 @@ def _load_group_data(subject_ids, data_dir, lock_type, phase,
     for sid in subject_ids:
         try:
             ersp, f, t = _find_and_load(
-                data_dir, sid, lock_type, phase,
-                test_type, group_label, trial_type, roi_name
+                pkl_dir, sid, lock_type, phase,
+                test_type, group_label, trial_type, roi_name,
+                h5_dir=h5_dir
             )
             ersp_list.append(ersp)
             loaded_ids.append(sid)
@@ -437,11 +446,13 @@ def group_ersp_analysis(subject_ids,
                         phase='testing',
                         lock_type='response',
                         roi_name='theta',
-                        data_dir=r'C:\Experiment\Result\h5',
+                        pkl_dir=r'C:\Experiment\Result\triplet',
+                        h5_dir=r'C:\Experiment\Result\triplet\h5',
                         output_dir='./group_ersp_results',
                         do_permutation_test=True,
                         n_permutations=1000,
-                        test_type=None):
+                        test_type=None,
+                        data_dir=None):
     """
     群體 ERSP 分析。
 
@@ -455,6 +466,11 @@ def group_ersp_analysis(subject_ids,
     -------
     dict
     """
+    # 向後相容：舊的 data_dir 參數若有傳入，同時當作 pkl_dir 和 h5_dir
+    if data_dir is not None:
+        pkl_dir = data_dir
+        h5_dir  = data_dir
+
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -469,7 +485,8 @@ def group_ersp_analysis(subject_ids,
     print(f"Phase: {phase}  |  Lock: {lock_type}  |  ROI: {roi_cap}")
     if test_type:
         print(f"Test type: {test_type} (counterbalanced design → per-subject block average)")
-    print(f"Data source: {data_dir}")
+    print(f"Data source (stim/pkl): {pkl_dir}")
+    print(f"Data source (resp/h5):  {h5_dir}")
     print(f"Output dir: {output_path}")
     print("=" * 70)
 
@@ -489,14 +506,16 @@ def group_ersp_analysis(subject_ids,
 
             print(f"\n  Loading {condition1}...")
             arr1, freqs, times, ids1, _ = _load_group_data(
-                subject_ids, data_dir, lock_type, phase,
-                None, group_label, condition1, roi_lower
+                subject_ids, pkl_dir, lock_type, phase,
+                None, group_label, condition1, roi_lower,
+                h5_dir=h5_dir
             )
 
             print(f"\n  Loading {condition2}...")
             arr2, _, _, ids2, _ = _load_group_data(
-                subject_ids, data_dir, lock_type, phase,
-                None, group_label, condition2, roi_lower
+                subject_ids, pkl_dir, lock_type, phase,
+                None, group_label, condition2, roi_lower,
+                h5_dir=h5_dir
             )
 
             if arr1 is None or arr2 is None:
@@ -559,9 +578,9 @@ def group_ersp_analysis(subject_ids,
                 for sid in subject_ids:
                     try:
                         ersp, f, t, blk_names = _load_subject_testing_pair(
-                            data_dir, sid, lock_type,
+                            pkl_dir, sid, lock_type,
                             test_type, trial_type, roi_lower,
-                            pair=_pair
+                            pair=_pair, h5_dir=h5_dir
                         )
                         ersp_list.append(ersp)
                         loaded_ids.append(sid)
@@ -636,10 +655,12 @@ def group_ersp_analysis(subject_ids,
 # ============================================================
 
 def auto_group_ersp_analysis(subject_ids,
-                             data_dir=r'C:\Experiment\Result\h5',
+                             pkl_dir=r'C:\Experiment\Result\triplet',
+                             h5_dir=r'C:\Experiment\Result\triplet\h5',
                              output_dir=r'C:\Experiment\Result\group_ersp',
                              do_permutation_test=True,
-                             n_permutations=1000):
+                             n_permutations=1000,
+                             data_dir=None):
     """
     全自動群體 ERSP 分析。
 
@@ -665,10 +686,15 @@ def auto_group_ersp_analysis(subject_ids,
 
     total = len(combos)
 
-    # 自動偵測 trial_type 條件名稱
+    # 向後相容：舊的 data_dir 參數若有傳入，同時當作 pkl_dir 和 h5_dir
+    if data_dir is not None:
+        pkl_dir = data_dir
+        h5_dir  = data_dir
+
+    # 自動偵測 trial_type 條件名稱（從 h5_dir 掃描 Response 檔案）
     import glob as _glob
     detected_types = []
-    sample_files = _glob.glob(os.path.join(data_dir, f'{subject_ids[0]}_Response_*.h5'))
+    sample_files = _glob.glob(os.path.join(h5_dir, f'{subject_ids[0]}_Response_*.h5'))
     for f in sample_files:
         parts = os.path.basename(f).replace('_ERSP.h5', '').split('_')
         tt = parts[-1]
@@ -684,7 +710,8 @@ def auto_group_ersp_analysis(subject_ids,
     print("=" * 70)
     print(f"Subjects (N={len(subject_ids)}): {subject_ids}")
     print(f"Conditions detected: {condition1} vs {condition2}")
-    print(f"Data source: {data_dir}")
+    print(f"Data source (stim/pkl): {pkl_dir}")
+    print(f"Data source (resp/h5):  {h5_dir}")
     print(f"Output root: {output_dir}")
     print(f"Permutation Test: {'Yes' if do_permutation_test else 'No'}")
     print(f"Total {total} combinations")
@@ -716,7 +743,8 @@ def auto_group_ersp_analysis(subject_ids,
                 phase               = phase,
                 lock_type           = lock_type,
                 roi_name            = roi_name,
-                data_dir            = data_dir,
+                pkl_dir             = pkl_dir,
+                h5_dir              = h5_dir,
                 output_dir          = sub_dir,
                 do_permutation_test = do_permutation_test,
                 n_permutations      = n_permutations,
@@ -748,4 +776,150 @@ def auto_group_ersp_analysis(subject_ids,
         print(f"   Run option 13 first, select 'Save for group analysis: y'")
         print(f"   pkl will be saved automatically to data_dir")
 
+    print("\n" + "="*60)
+    print("輸出 ERSP 摘要 CSV 供 R 分析用...")
+    print("="*60)
+    export_ersp_to_csv(
+        data_dir=h5_dir,
+        subject_ids=subject_ids,
+        output_csv_dir=r'C:\Experiment\ersp_csv',
+    )
+
     return all_combo_results
+
+
+# ============================================================
+# 7. 輸出 ERSP 摘要 CSV 供 R 分析用
+# ============================================================
+
+def export_ersp_to_csv(data_dir, subject_ids, output_csv_dir=r'C:\Experiment\ersp_csv'):
+    """
+    從 h5 檔案讀取 ERSP 結果，
+    對指定頻率和時間窗口取平均，輸出成 CSV 供 R 分析用。
+
+    Response-locked：Motor ROI，Theta（4-8Hz），-300 to +50ms
+    Stimulus-locked：Perceptual ROI，Alpha（8-13Hz），+100 to +300ms
+    """
+    import pandas as pd
+    import glob
+    import warnings
+
+    WINDOWS = {
+        'response': {
+            'rois':      ['Motor', 'Motor_Frontal', 'Motor_Central',
+                          'Motor_Parietal', 'Motor_Occipital',
+                          'Perceptual', 'Perceptual_Parietal', 'Perceptual_Occipital',
+                          'Perceptual_Frontal', 'Perceptual_Central'],
+            'freq_band': 'theta',
+            'freq_range': (4, 8),
+            'time_range': (-0.300, 0.050),
+            'out_dir':   os.path.join(output_csv_dir, 'response_lock'),
+        },
+        'stimulus': {
+            'rois':      ['Motor', 'Motor_Frontal', 'Motor_Central',
+                          'Motor_Parietal', 'Motor_Occipital',
+                          'Perceptual', 'Perceptual_Parietal', 'Perceptual_Occipital',
+                          'Perceptual_Frontal', 'Perceptual_Central'],
+            'freq_band': 'alpha',
+            'freq_range': (8, 13),
+            'time_range': (0.100, 0.300),
+            'out_dir':   os.path.join(output_csv_dir, 'stimulus_lock'),
+        },
+    }
+
+    rows = []
+
+    for lock_type, cfg in WINDOWS.items():
+        os.makedirs(cfg['out_dir'], exist_ok=True)
+
+        # 掃描 h5 檔案
+        if lock_type == 'response':
+            h5_files = glob.glob(os.path.join(data_dir, '*_Response_*.h5'))
+        else:
+            h5_files = glob.glob(os.path.join(data_dir, '*_Stimulus_*.h5'))
+
+        for fpath in h5_files:
+            fname = os.path.basename(fpath)
+            parts = fname.replace('_ERSP.h5', '').split('_')
+
+            # 解析檔名：sub0001_Response_Learning_Block7-11_Regular_ERSP.h5
+            try:
+                sid         = parts[0]
+                phase       = parts[2]   # Learning / MotorTest / PerceptualTest
+                block_group = parts[3]   # Block7-11
+                trial_type  = parts[4]   # Regular / Random / high / low
+            except IndexError:
+                print(f"  ⚠ 無法解析檔名：{fname}")
+                continue
+
+            if sid not in subject_ids:
+                continue
+
+            # 判斷 tasktype
+            if 'Motor' in phase and 'Test' in phase:
+                tasktype = 'motor'
+            elif 'Perceptual' in phase and 'Test' in phase:
+                tasktype = 'percept'
+            else:
+                tasktype = 'none'
+
+            # 讀取 h5
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    tfr_list = mne.time_frequency.read_tfrs(str(fpath))
+                tfr = tfr_list[0] if isinstance(tfr_list, list) else tfr_list
+            except Exception as e:
+                print(f"  ⚠ 讀取失敗：{fname}：{e}")
+                continue
+
+            freqs = tfr.freqs
+            times = tfr.times
+
+            # 頻率和時間 mask
+            freq_mask = (freqs >= cfg['freq_range'][0]) & (freqs <= cfg['freq_range'][1])
+            time_mask = (times >= cfg['time_range'][0]) & (times <= cfg['time_range'][1])
+
+            # 對每個 ROI 取平均
+            for roi_name in cfg['rois']:
+                roi_channels = ROI_GROUPS.get(roi_name)
+                if roi_channels is None:
+                    continue
+
+                ch_names_upper = [ch.upper() for ch in tfr.ch_names]
+                roi_idx = [ch_names_upper.index(ch.upper())
+                           for ch in roi_channels
+                           if ch.upper() in ch_names_upper]
+
+                if not roi_idx:
+                    continue
+
+                # data shape: (n_ch, n_freqs, n_times)
+                roi_data = tfr.data[roi_idx]           # (n_roi_ch, n_freqs, n_times)
+                roi_mean = roi_data.mean(axis=0)       # (n_freqs, n_times)
+                ersp_mean = roi_mean[freq_mask][:, time_mask].mean()
+
+                rows.append({
+                    'sid':         sid,
+                    'lock_type':   lock_type,
+                    'phase':       phase,
+                    'block_group': block_group,
+                    'trial_type':  trial_type,
+                    'tasktype':    tasktype,
+                    'roi':         roi_name,
+                    'freq_band':   cfg['freq_band'],
+                    'freq_min':    cfg['freq_range'][0],
+                    'freq_max':    cfg['freq_range'][1],
+                    'time_min_ms': int(cfg['time_range'][0] * 1000),
+                    'time_max_ms': int(cfg['time_range'][1] * 1000),
+                    'ersp_mean':   float(ersp_mean),
+                })
+
+        # 輸出 CSV
+        if rows:
+            df = pd.DataFrame(rows)
+            df_lock = df[df['lock_type'] == lock_type]
+            if not df_lock.empty:
+                out_path = os.path.join(cfg['out_dir'], 'ersp_summary.csv')
+                df_lock.to_csv(out_path, index=False)
+                print(f"  ✓ {lock_type} CSV 已儲存：{out_path}（{len(df_lock)} 行）")

@@ -96,10 +96,11 @@ def show_main_menu(has_raw=True, has_epochs=False, asrt_available=True):
         print(" 17. ASRT 群體分析 (Group-level ERSP)")
         print(" 18. ASRT ROI 頻譜分析")
         print(" 19. ASRT Block 比較分析")
+        print(" 20. 輸出 RT 資料到 CSV（從 Response Epochs metadata）")
 
     print("\n  0. 返回主選單")
 
-    choice = input("\n請輸入選項 (0-19): ").strip()
+    choice = input("\n請輸入選項 (0-20): ").strip()
     return choice
 
 

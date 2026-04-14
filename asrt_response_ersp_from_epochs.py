@@ -50,35 +50,41 @@ def _tfr_to_power_dict(tfr):
     return power_dict
 
 
-def _compute_pertrial_ersp(epochs_subset, freqs, n_cycles, decim, n_jobs, label='', do_td_baseline=False):
-    """
-    對一組 epochs 執行逐 trial Morlet wavelet，
-    再套用各 trial 自己的 logratio baseline，最後平均。
-
-    Baseline 窗口（相對於 response onset）：
-        start = -rt - 0.5 s
-        end   = -rt - 0.1 s
-    這對應到 Stimulus 後約 700–1100 ms 的 Blank 靜息期。
-
-    Parameters
-    ----------
-    epochs_subset : mne.Epochs
-        必須包含 metadata 欄位 'stim_sample' 和 'resp_sample'
-    freqs, n_cycles : ndarray
-    decim, n_jobs : int
-    label : str
-
-    Returns
-    -------
-    avg_tfr : mne.time_frequency.AverageTFR
-    """
+def _compute_pertrial_ersp(epochs_subset, freqs, n_cycles, decim, n_jobs,
+                            label='', do_td_baseline=False, baseline_method='pre_stim'):
     prefix = f"  [{label}] " if label else "  "
     n_epochs = len(epochs_subset)
+    sfreq = epochs_subset.info['sfreq']
 
-    print(f"{prefix}計算逐 trial Morlet wavelet（{n_epochs} trials）...")
+    # === Mirror padding 設定 ===
+    # 最低頻率的 wavelet 有效範圍 = n_cycles / (2π × f_min) × 3σ
+    f_min = float(freqs[0])
+    n_cyc_min = float(n_cycles[0]) if hasattr(n_cycles, '__len__') else float(n_cycles)
+    sigma_t = n_cyc_min / (2.0 * np.pi * f_min)
+    pad_duration = max(3.0 * sigma_t, 0.5)  # 至少 500ms
+    pad_samples = int(np.ceil(pad_duration * sfreq))
+
+    print(f"{prefix}Mirror padding: {pad_duration*1000:.0f} ms（各頻率 3σ，最低 4Hz 需 ~240ms）")
+
+    # === 建立 padded epochs ===
+    data = epochs_subset.get_data()  # (n_epochs, n_ch, n_times)
+    padded_data = np.pad(data, ((0, 0), (0, 0), (pad_samples, pad_samples)), mode='reflect')
+
+    new_tmin = epochs_subset.tmin - pad_duration
+    padded_epochs = mne.EpochsArray(
+        padded_data,
+        info=epochs_subset.info,
+        events=epochs_subset.events,
+        tmin=new_tmin,
+        metadata=epochs_subset.metadata.reset_index(drop=True) if epochs_subset.metadata is not None else None,
+        event_id=epochs_subset.event_id,
+        verbose=False,
+    )
+
+    print(f"{prefix}計算逐 trial Morlet wavelet（{n_epochs} trials，padded）...")
 
     tfr_epochs = mne.time_frequency.tfr_morlet(
-        epochs_subset,
+        padded_epochs,
         freqs=freqs,
         n_cycles=n_cycles,
         use_fft=True,
@@ -86,22 +92,29 @@ def _compute_pertrial_ersp(epochs_subset, freqs, n_cycles, decim, n_jobs, label=
         decim=decim,
         n_jobs=n_jobs,
         average=False,
+        verbose=False,
     )
-    # tfr_epochs.data: (n_epochs, n_channels, n_freqs, n_times)
 
-    ep_times  = epochs_subset.times
-    times     = tfr_epochs.times
-    corrected = np.zeros_like(tfr_epochs.data)  # (n_epochs, n_ch, n_freqs, n_times)
+    # crop 回原始時間範圍
+    tfr_epochs.crop(tmin=epochs_subset.tmin, tmax=epochs_subset.tmax)
 
-    sfreq = epochs_subset.info['sfreq']
+    times    = tfr_epochs.times
+    ep_times = epochs_subset.times
 
+    # === whole_epoch 模式：直接 average 後對整段做 baseline，不進 per-trial 迴圈 ===
+    if baseline_method == 'whole_epoch':
+        avg_tfr = tfr_epochs.average()
+        avg_tfr.apply_baseline(mode='logratio', baseline=(None, None))
+        print(f"{prefix}✓ ERSP 完成（whole-epoch baseline，average 後校正）")
+        return avg_tfr
+
+    corrected = np.zeros_like(tfr_epochs.data)
     n_short_baseline = 0
     for i in range(n_epochs):
         stim_sample = epochs_subset.metadata['stim_sample'].values[i]
         resp_sample = epochs_subset.events[i, 0]
 
         if stim_sample < 0:
-            # 找不到前置 Stimulus，用預設 RT=0.5s 做 fallback
             rt = 0.5
         else:
             rt = (resp_sample - stim_sample) / sfreq
@@ -109,7 +122,6 @@ def _compute_pertrial_ersp(epochs_subset, freqs, n_cycles, decim, n_jobs, label=
         bl_start = -rt - 0.5
         bl_end   = -rt - 0.1
 
-        # TD baseline（per-trial，可選）
         if do_td_baseline:
             td_mask = (ep_times >= bl_start) & (ep_times <= bl_end)
             if td_mask.sum() == 0:
@@ -117,28 +129,23 @@ def _compute_pertrial_ersp(epochs_subset, freqs, n_cycles, decim, n_jobs, label=
             td_mean = epochs_subset._data[i][:, td_mask].mean(axis=-1, keepdims=True)
             epochs_subset._data[i] -= td_mean
 
-        # FD baseline（per-trial，永遠做）
-        bl_mask  = (times >= bl_start) & (times <= bl_end)
-
+        # 現有做法：per-trial pre-stimulus blank 期
+        bl_mask = (times >= bl_start) & (times <= bl_end)
         if bl_mask.sum() == 0:
-            # fallback：向前擴展 200 ms
             bl_mask = (times >= bl_start - 0.2) & (times <= bl_end)
             n_short_baseline += 1
-
-        # bl_mean shape: (n_ch, n_freqs, 1)
         bl_mean = tfr_epochs.data[i][:, :, bl_mask].mean(axis=-1, keepdims=True)
-        # 避免除以零
+
         bl_mean = np.where(bl_mean == 0, np.finfo(float).eps, bl_mean)
         corrected[i] = 10.0 * np.log10(tfr_epochs.data[i] / bl_mean)
 
     if n_short_baseline > 0:
         print(f"{prefix}⚠  {n_short_baseline} trials baseline 窗口太短，已自動擴展")
 
-    # 把校正後的資料寫回，再用 .average() 產生 AverageTFR
     tfr_epochs.data = corrected
     avg_tfr = tfr_epochs.average()
 
-    print(f"{prefix}✓ ERSP 完成（per-trial logratio baseline）")
+    print(f"{prefix}✓ ERSP 完成（per-trial logratio baseline + mirror padding）")
     return avg_tfr
 
 
@@ -152,6 +159,7 @@ def response_ersp_from_current_epochs(
     subject_id=None,
     plot_dir=None,
     do_td_baseline=False,
+    baseline_method='pre_stim',
 ):
     """
     從當前的 Response epochs 執行逐 trial ERSP 分析。
@@ -207,7 +215,10 @@ def response_ersp_from_current_epochs(
 
     print(f"\n  頻率範圍：{freqs[0]}–{freqs[-1]} Hz")
     print(f"  n_cycles：{n_cycles[0]:.1f}–{n_cycles[-1]:.1f}")
-    print(f"  Baseline（per-trial）：-rt-0.5 → -rt-0.1 s（Blank 靜息期）")
+    if baseline_method == 'whole_epoch':
+        print(f"  Baseline：整段 epoch 平均（Lum et al. 2023）")
+    else:
+        print(f"  Baseline（per-trial）：-rt-0.5 → -rt-0.1 s（Blank 靜息期）")
 
     # Block grouping
     LEARNING_GROUPS = [(7, 11), (12, 16), (17, 21), (22, 26)]
@@ -248,6 +259,7 @@ def response_ersp_from_current_epochs(
                 freqs, n_cycles, decim, n_jobs,
                 label=f"{key}/{trial_type}",
                 do_td_baseline=do_td_baseline,
+                baseline_method=baseline_method,
             )
 
             if output_dir and subject_id:
@@ -319,6 +331,7 @@ def response_ersp_from_current_epochs(
             freqs, n_cycles, decim, n_jobs,
             label="All",
             do_td_baseline=do_td_baseline,
+            baseline_method=baseline_method,
         )
         if output_dir and subject_id:
             os.makedirs(output_dir, exist_ok=True)

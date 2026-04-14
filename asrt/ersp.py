@@ -59,7 +59,8 @@ def _save_ersp_h5(power_dict, filepath):
         print(f"  ⚠ h5py 未安裝，已改存為 npz: {npz_path}")
 
 
-def _compute_single_ersp(epochs_subset, available_groups, freqs, n_cycles, baseline_window):
+def _compute_single_ersp(epochs_subset, available_groups, freqs, n_cycles,
+                          baseline_window, baseline_method='pre_stim'):
     """
     對一組 epochs 計算各 ROI 的 ERSP，回傳 power_dict。
 
@@ -96,7 +97,10 @@ def _compute_single_ersp(epochs_subset, available_groups, freqs, n_cycles, basel
             average=True,
             n_jobs=-1
         )
-        power.apply_baseline(mode='logratio', baseline=baseline_window)
+        if baseline_method == 'whole_epoch':
+            power.apply_baseline(mode='logratio', baseline=(None, None))
+        else:
+            power.apply_baseline(mode='logratio', baseline=baseline_window)
 
         power_dict[roi_name] = {
             'power':    power.data.mean(axis=0),   # (freqs, times)
@@ -109,7 +113,7 @@ def _compute_single_ersp(epochs_subset, available_groups, freqs, n_cycles, basel
     return power_dict if power_dict else None
 
 
-def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir='./', do_td_baseline=False):
+def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir='./', do_td_baseline=False, baseline_method='pre_stim'):
     """
     ASRT ERSP 分析（使用 Dillian 的參數 + Lum et al. 2023 視覺化風格）
 
@@ -239,7 +243,8 @@ def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir
                 continue
 
             power_dict = _compute_single_ersp(
-                epochs_subset, available_groups, freqs, n_cycles, baseline_window
+                epochs_subset, available_groups, freqs, n_cycles, baseline_window,
+                baseline_method=baseline_method,
             )
 
             if power_dict is None:
@@ -282,7 +287,10 @@ def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir
                 average=True,
                 n_jobs=-1
             )
-            power.apply_baseline(mode='logratio', baseline=baseline_window)
+            if baseline_method == 'whole_epoch':
+                power.apply_baseline(mode='logratio', baseline=(None, None))
+            else:
+                power.apply_baseline(mode='logratio', baseline=baseline_window)
 
             power_dict[roi_name] = {
                 'power':    power.data.mean(axis=0),
@@ -349,7 +357,7 @@ def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='sti
                             freqs=None, n_cycles=None, output_dir='./ersp_results',
                             save_for_group_analysis=False,
                             group_data_dir=r'C:\Experiment\Result\h5',
-                            do_td_baseline=False):
+                            do_td_baseline=False, baseline_method='pre_stim'):
     """
     完整的 ASRT ERSP 分析（階層式）
     
@@ -413,12 +421,12 @@ def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='sti
     if phase.lower() == 'learning':
         results = _ersp_learning_phase(
             epochs, subject_id, lock_type, freqs, n_cycles, output_dir,
-            do_td_baseline=do_td_baseline,
+            do_td_baseline=do_td_baseline, baseline_method=baseline_method,
         )
     elif phase.lower() == 'testing':
         results = _ersp_testing_phase(
             epochs, subject_id, lock_type, freqs, n_cycles, output_dir,
-            do_td_baseline=do_td_baseline,
+            do_td_baseline=do_td_baseline, baseline_method=baseline_method,
         )
     else:
         raise ValueError(f"Unknown phase: {phase}. Use 'learning' or 'testing'")
@@ -503,7 +511,7 @@ def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='sti
     
     return results
 
-def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_dir, do_td_baseline=False):
+def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_dir, do_td_baseline=False, baseline_method='pre_stim'):
     """
     Learning 階段 ERSP 分析
 
@@ -564,6 +572,7 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
                     n_cycles=n_cycles,
                     output_dir=output_dir,
                     do_td_baseline=do_td_baseline,
+                    baseline_method=baseline_method,
                 )
                 group_results[trial_type] = power_dict
 
@@ -590,7 +599,7 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
                 epochs_subset,
                 subject_id=f"{subject_id}_{lock_type}_learning_{trial_type}",
                 freqs=freqs, n_cycles=n_cycles, output_dir=output_dir,
-                do_td_baseline=do_td_baseline,
+                do_td_baseline=do_td_baseline, baseline_method=baseline_method,
             )
             results[trial_type] = power_dict
 
@@ -601,7 +610,7 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
     return results
 
 
-def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_dir, do_td_baseline=False):
+def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_dir, do_td_baseline=False, baseline_method='pre_stim'):
     """
     Testing 階段 ERSP 分析
 
@@ -674,6 +683,7 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
                         n_cycles=n_cycles,
                         output_dir=output_dir,
                         do_td_baseline=do_td_baseline,
+                        baseline_method=baseline_method,
                     )
                     test_results[trial_type] = power_dict
                     results[group_label][test_type][trial_type] = power_dict
@@ -707,7 +717,7 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
                     epochs_subset,
                     subject_id=f"{subject_id}_{lock_type}_testing_{test_type}_{trial_type}",
                     freqs=freqs, n_cycles=n_cycles, output_dir=output_dir,
-                    do_td_baseline=do_td_baseline,
+                    do_td_baseline=do_td_baseline, baseline_method=baseline_method,
                 )
                 results[test_type][trial_type] = power_dict
 
