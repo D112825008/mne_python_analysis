@@ -331,11 +331,11 @@ def _load_group_data(subject_ids, pkl_dir, lock_type, phase,
 # 4. 繪圖
 # ============================================================
 
-def _draw_ersp_panel(ax, ersp_2d, freqs, times, title, vmin, vmax):
-    im = ax.imshow(
-        ersp_2d, aspect='auto', origin='lower',
-        extent=[times[0], times[-1], freqs[0], freqs[-1]],
-        cmap='RdBu_r', vmin=vmin, vmax=vmax
+def _draw_ersp_panel(ax, ersp_2d, freqs, times, title, vmin, vmax, x_min=-0.5, x_max=0.2):
+    im = ax.contourf(
+        times, freqs, ersp_2d,
+        levels=20, cmap='RdBu_r',
+        vmin=vmin, vmax=vmax, extend='both'
     )
     ax.axvline(0, color='black', linestyle='--', linewidth=1.5)
     ax.axhline(8,  color='white', linestyle=':', linewidth=1, alpha=0.6)
@@ -343,12 +343,13 @@ def _draw_ersp_panel(ax, ersp_2d, freqs, times, title, vmin, vmax):
     ax.set_xlabel('Time (s)', fontsize=11)
     ax.set_ylabel('Frequency (Hz)', fontsize=11)
     ax.set_title(title, fontsize=11, fontweight='bold')
+    ax.set_xlim([x_min, x_max])
     return im
 
 
 def _plot_group_block(arr_reg, arr_ran, freqs, times,
                       common_ids, suptitle, output_path,
-                      do_permutation, n_permutations):
+                      do_permutation, n_permutations, lock_type='response'):
     """
     產生單一 Block 組的群體比較圖：
       [Regular grand avg | Random grand avg | Difference (+ cluster outline)]
@@ -362,6 +363,14 @@ def _plot_group_block(arr_reg, arr_ran, freqs, times,
     ran_mean = arr_ran.mean(axis=0)
     diff     = reg_mean - ran_mean   # Regular − Random
 
+    # ── xlim 依 lock_type ──
+    if lock_type == 'stimulus':
+        x_min, x_max = -0.5, 0.3
+    else:
+        x_min, x_max = -0.5, 0.2
+
+    t_mask = (times >= x_min) & (times <= x_max)
+
     # ── Cluster Permutation Test ──
     sig_mask = None
     n_sig    = 0
@@ -369,7 +378,7 @@ def _plot_group_block(arr_reg, arr_ran, freqs, times,
     if do_permutation and n_sub >= 3:
         print(f"    Running Cluster Permutation Test (n_permutations={n_permutations})...")
         try:
-            diff_per_sub = arr_ran - arr_reg   # (n_sub, n_freqs, n_times)
+            diff_per_sub = arr_reg - arr_ran   # Regular - Random（跟 diff 一致）
             _, clusters, cluster_pv, _ = permutation_cluster_1samp_test(
                 diff_per_sub,
                 n_permutations=n_permutations,
@@ -391,28 +400,35 @@ def _plot_group_block(arr_reg, arr_ran, freqs, times,
     elif do_permutation and n_sub < 3:
         print(f"    ⚠ Too few subjects ({n_sub} < 3), skipping Permutation Test")
 
-    # ── 決定 colorbar 範圍 ──
-    vmax_cond = min(max(abs(reg_mean).max(), abs(ran_mean).max()) * 0.8, 1.5)
+    # ── 決定 colorbar 範圍（95th percentile，只從顯示範圍計算）──
+    combined = np.concatenate([
+        reg_mean[:, t_mask].ravel(),
+        ran_mean[:, t_mask].ravel()
+    ])
+    vmax_cond = np.percentile(np.abs(combined), 95)
     vmin_cond = -vmax_cond
-    vmax_diff = min(abs(diff).max() * 0.8, 1.0)
+    vmax_diff = np.percentile(np.abs(diff[:, t_mask].ravel()), 95)
     vmin_diff = -vmax_diff
 
     # ── 繪圖 ──
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
     im1 = _draw_ersp_panel(axes[0], reg_mean, freqs, times,
-                           f'Regular\n(N={n_sub})', vmin_cond, vmax_cond)
+                           f'Regular\n(N={n_sub})', vmin_cond, vmax_cond,
+                           x_min=x_min, x_max=x_max)
     plt.colorbar(im1, ax=axes[0], label='Power (dB)')
 
     im2 = _draw_ersp_panel(axes[1], ran_mean, freqs, times,
-                           f'Random\n(N={n_sub})', vmin_cond, vmax_cond)
+                           f'Random\n(N={n_sub})', vmin_cond, vmax_cond,
+                           x_min=x_min, x_max=x_max)
     plt.colorbar(im2, ax=axes[1], label='Power (dB)')
 
     diff_title = 'Difference (Regular - Random)'
     if sig_mask is not None and np.any(sig_mask):
         diff_title += '\n(black outline: p<0.05, cluster-corrected)'
     im3 = _draw_ersp_panel(axes[2], diff, freqs, times,
-                           diff_title, vmin_diff, vmax_diff)
+                           diff_title, vmin_diff, vmax_diff,
+                           x_min=x_min, x_max=x_max)
     if sig_mask is not None and np.any(sig_mask):
         axes[2].contour(times, freqs, sig_mask,
                         levels=[0.5], colors='black',
@@ -543,7 +559,7 @@ def group_ersp_analysis(subject_ids,
             block_result = _plot_group_block(
                 arr1, arr2, freqs, times,
                 common_ids, suptitle, output_path / out_name,
-                do_permutation_test, n_permutations
+                do_permutation_test, n_permutations, lock_type=lock_type
             )
             all_results[group_label] = {
                 **block_result,
@@ -627,7 +643,7 @@ def group_ersp_analysis(subject_ids,
             block_result = _plot_group_block(
                 arr1, arr2, freqs, times,
                 common_ids, suptitle, output_path / out_name,
-                do_permutation_test, n_permutations
+                do_permutation_test, n_permutations, lock_type=lock_type
             )
             all_results[pair_key] = {
                 **block_result,

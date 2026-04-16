@@ -68,7 +68,7 @@ def _compute_pertrial_ersp(epochs_subset, freqs, n_cycles, decim, n_jobs,
 
     # === 建立 padded epochs ===
     data = epochs_subset.get_data()  # (n_epochs, n_ch, n_times)
-    padded_data = np.pad(data, ((0, 0), (0, 0), (pad_samples, pad_samples)), mode='reflect')
+    padded_data = np.pad(data, ((0, 0), (0, 0), (pad_samples, pad_samples)), mode='edge')
 
     new_tmin = epochs_subset.tmin - pad_duration
     padded_epochs = mne.EpochsArray(
