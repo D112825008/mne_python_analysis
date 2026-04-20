@@ -332,9 +332,10 @@ def _load_group_data(subject_ids, pkl_dir, lock_type, phase,
 # ============================================================
 
 def _draw_ersp_panel(ax, ersp_2d, freqs, times, title, vmin, vmax, x_min=-0.5, x_max=0.2):
+    levels = np.linspace(vmin, vmax, 20)   # ← 改這行
     im = ax.contourf(
         times, freqs, ersp_2d,
-        levels=20, cmap='RdBu_r',
+        levels=levels, cmap='RdBu_r',
         vmin=vmin, vmax=vmax, extend='both'
     )
     ax.axvline(0, color='black', linestyle='--', linewidth=1.5)
@@ -349,7 +350,9 @@ def _draw_ersp_panel(ax, ersp_2d, freqs, times, title, vmin, vmax, x_min=-0.5, x
 
 def _plot_group_block(arr_reg, arr_ran, freqs, times,
                       common_ids, suptitle, output_path,
-                      do_permutation, n_permutations, lock_type='response'):
+                      do_permutation, n_permutations, lock_type='response',
+                      vmax_cond=None, vmax_diff=None,
+                      label_left='Regular', label_right='Random'):
     """
     產生單一 Block 組的群體比較圖：
       [Regular grand avg | Random grand avg | Difference (+ cluster outline)]
@@ -401,29 +404,31 @@ def _plot_group_block(arr_reg, arr_ran, freqs, times,
         print(f"    ⚠ Too few subjects ({n_sub} < 3), skipping Permutation Test")
 
     # ── 決定 colorbar 範圍（95th percentile，只從顯示範圍計算）──
-    combined = np.concatenate([
-        reg_mean[:, t_mask].ravel(),
-        ran_mean[:, t_mask].ravel()
-    ])
-    vmax_cond = np.percentile(np.abs(combined), 95)
+    if vmax_cond is None:
+        combined = np.concatenate([
+            reg_mean[:, t_mask].ravel(),
+            ran_mean[:, t_mask].ravel()
+        ])
+        vmax_cond = np.percentile(np.abs(combined), 95)
+    if vmax_diff is None:
+        vmax_diff = np.percentile(np.abs(diff[:, t_mask].ravel()), 95)
     vmin_cond = -vmax_cond
-    vmax_diff = np.percentile(np.abs(diff[:, t_mask].ravel()), 95)
     vmin_diff = -vmax_diff
 
     # ── 繪圖 ──
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
     im1 = _draw_ersp_panel(axes[0], reg_mean, freqs, times,
-                           f'Regular\n(N={n_sub})', vmin_cond, vmax_cond,
+                           f'{label_left}\n(N={n_sub})', vmin_cond, vmax_cond,
                            x_min=x_min, x_max=x_max)
     plt.colorbar(im1, ax=axes[0], label='Power (dB)')
 
     im2 = _draw_ersp_panel(axes[1], ran_mean, freqs, times,
-                           f'Random\n(N={n_sub})', vmin_cond, vmax_cond,
+                           f'{label_right}\n(N={n_sub})', vmin_cond, vmax_cond,
                            x_min=x_min, x_max=x_max)
     plt.colorbar(im2, ax=axes[1], label='Power (dB)')
 
-    diff_title = 'Difference (Regular - Random)'
+    diff_title = f'Difference ({label_left} - {label_right})'
     if sig_mask is not None and np.any(sig_mask):
         diff_title += '\n(black outline: p<0.05, cluster-corrected)'
     im3 = _draw_ersp_panel(axes[2], diff, freqs, times,
@@ -468,7 +473,10 @@ def group_ersp_analysis(subject_ids,
                         do_permutation_test=True,
                         n_permutations=1000,
                         test_type=None,
-                        data_dir=None):
+                        data_dir=None,
+                        unified_colorbar=False,
+                        display_label1=None,
+                        display_label2=None):
     """
     群體 ERSP 分析。
 
@@ -512,6 +520,35 @@ def group_ersp_analysis(subject_ids,
     # Learning：按 Block 分組
     # ============================================================
     if phase.lower() == 'learning':
+
+        # 統一 colorbar 掃描
+        global_vmax_cond = None
+        global_vmax_diff = None
+        if unified_colorbar:
+            if lock_type == 'stimulus':
+                _xmin, _xmax = -0.5, 0.3
+            else:
+                _xmin, _xmax = -0.5, 0.2
+            _gvc, _gvd = 0.0, 0.0
+            for (_bs, _be) in LEARNING_GROUPS:
+                _gl = f"Block{_bs}-{_be}"
+                _a1, _, _t, _i1, _ = _load_group_data(subject_ids, pkl_dir, lock_type, phase, None, _gl, condition1, roi_lower, h5_dir=h5_dir)
+                _a2, _, _, _i2, _ = _load_group_data(subject_ids, pkl_dir, lock_type, phase, None, _gl, condition2, roi_lower, h5_dir=h5_dir)
+                if _a1 is None or _a2 is None:
+                    continue
+                _c = [s for s in _i1 if s in _i2]
+                if not _c:
+                    continue
+                _a1 = _a1[[_i1.index(s) for s in _c]]
+                _a2 = _a2[[_i2.index(s) for s in _c]]
+                _rm, _rn = _a1.mean(axis=0), _a2.mean(axis=0)
+                _d = _rm - _rn
+                _tm = (_t >= _xmin) & (_t <= _xmax)
+                _gvc = max(_gvc, np.percentile(np.abs(np.concatenate([_rm[:, _tm].ravel(), _rn[:, _tm].ravel()])), 95))
+                _gvd = max(_gvd, np.percentile(np.abs(_d[:, _tm].ravel()), 95))
+            global_vmax_cond = _gvc if _gvc > 0 else None
+            global_vmax_diff = _gvd if _gvd > 0 else None
+            print(f"  統一 colorbar: vmax_cond={global_vmax_cond:.4f} dB, vmax_diff={global_vmax_diff:.4f} dB")
 
         for (blk_start, blk_end) in LEARNING_GROUPS:
             group_label = f"Block{blk_start}-{blk_end}"
@@ -557,9 +594,13 @@ def group_ersp_analysis(subject_ids,
                 f"group_learning_{lock_type}_{roi_lower}_{group_label}_comparison.png"
             )
             block_result = _plot_group_block(
-                arr1, arr2, freqs, times,
+                arr2, arr1, freqs, times,
                 common_ids, suptitle, output_path / out_name,
-                do_permutation_test, n_permutations, lock_type=lock_type
+                do_permutation_test, n_permutations, lock_type=lock_type,
+                vmax_cond=global_vmax_cond,
+                vmax_diff=global_vmax_diff,
+                label_left=display_label2 or condition2,
+                label_right=display_label1 or condition1,
             )
             all_results[group_label] = {
                 **block_result,
@@ -579,6 +620,48 @@ def group_ersp_analysis(subject_ids,
             'first' : f'(Early {tt_cap} blocks)',
             'second': f'(Late {tt_cap} blocks)',
         }
+
+        # 統一 colorbar 掃描
+        global_vmax_cond = None
+        global_vmax_diff = None
+        if unified_colorbar:
+            if lock_type == 'stimulus':
+                _xmin, _xmax = -0.5, 0.3
+            else:
+                _xmin, _xmax = -0.5, 0.2
+            _gvc, _gvd = 0.0, 0.0
+            for _pair in ('first', 'second'):
+                _el1, _el2, _times = [], [], None
+                for sid in subject_ids:
+                    try:
+                        _e1, _f, _t, _ = _load_subject_testing_pair(
+                            pkl_dir, sid, lock_type, test_type, condition1, roi_lower,
+                            pair=_pair, h5_dir=h5_dir)
+                        _el1.append(_e1)
+                        if _times is None:
+                            _times = _t
+                    except Exception:
+                        pass
+                    try:
+                        _e2, _f, _t, _ = _load_subject_testing_pair(
+                            pkl_dir, sid, lock_type, test_type, condition2, roi_lower,
+                            pair=_pair, h5_dir=h5_dir)
+                        _el2.append(_e2)
+                        if _times is None:
+                            _times = _t
+                    except Exception:
+                        pass
+                if not _el1 or not _el2 or _times is None:
+                    continue
+                _tm = (_times >= _xmin) & (_times <= _xmax)
+                _rm = np.array(_el1).mean(axis=0)
+                _rn = np.array(_el2).mean(axis=0)
+                _d = _rm - _rn
+                _gvc = max(_gvc, np.percentile(np.abs(np.concatenate([_rm[:, _tm].ravel(), _rn[:, _tm].ravel()])), 95))
+                _gvd = max(_gvd, np.percentile(np.abs(_d[:, _tm].ravel()), 95))
+            global_vmax_cond = _gvc if _gvc > 0 else None
+            global_vmax_diff = _gvd if _gvd > 0 else None
+            print(f"  統一 colorbar: vmax_cond={global_vmax_cond:.4f} dB, vmax_diff={global_vmax_diff:.4f} dB")
 
         for pair_key, pair_desc in pair_labels.items():
 
@@ -641,9 +724,13 @@ def group_ersp_analysis(subject_ids,
                 f"group_testing_{lock_type}_{roi_lower}_{test_type}_{pair_key}_comparison.png"
             )
             block_result = _plot_group_block(
-                arr1, arr2, freqs, times,
+                arr2, arr1, freqs, times,
                 common_ids, suptitle, output_path / out_name,
-                do_permutation_test, n_permutations, lock_type=lock_type
+                do_permutation_test, n_permutations, lock_type=lock_type,
+                vmax_cond=global_vmax_cond,
+                vmax_diff=global_vmax_diff,
+                label_left=display_label2 or condition2,
+                label_right=display_label1 or condition1,
             )
             all_results[pair_key] = {
                 **block_result,
@@ -676,7 +763,10 @@ def auto_group_ersp_analysis(subject_ids,
                              output_dir=r'C:\Experiment\Result\group_ersp',
                              do_permutation_test=True,
                              n_permutations=1000,
-                             data_dir=None):
+                             data_dir=None,
+                             unified_colorbar=False,
+                             display_label1=None,
+                             display_label2=None):
     """
     全自動群體 ERSP 分析。
 
@@ -717,9 +807,12 @@ def auto_group_ersp_analysis(subject_ids,
         if tt not in detected_types:
             detected_types.append(tt)
     if len(detected_types) >= 2:
-        condition1, condition2 = detected_types[0], detected_types[1]
+        if detected_types[0] in ('Regular', 'high'):
+            condition1, condition2 = detected_types[1], detected_types[0]
+        else:
+            condition1, condition2 = detected_types[0], detected_types[1]
     else:
-        condition1, condition2 = 'Regular', 'Random'  # fallback
+        condition1, condition2 = 'Random', 'Regular'  # fallback
 
     print("\n" + "=" * 70)
     print("Group ERSP Auto Analysis  v2.0")
@@ -765,6 +858,9 @@ def auto_group_ersp_analysis(subject_ids,
                 do_permutation_test = do_permutation_test,
                 n_permutations      = n_permutations,
                 test_type           = test_type,
+                unified_colorbar    = unified_colorbar,
+                display_label1      = display_label1,
+                display_label2      = display_label2,
             )
             all_combo_results[key] = result
             n_blocks = len(result)

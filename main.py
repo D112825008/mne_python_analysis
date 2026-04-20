@@ -1200,6 +1200,12 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                     print("❌ 取消分析")
                     continue
 
+                print("\nColorbar 範圍設定:")
+                print("  1. 每個 Block 各自計算（預設）")
+                print("  2. 同一 ROI 跨所有 Block 統一（方便比較 Early vs Late）")
+                cb_choice = input("請選擇 (1/2) [1]: ").strip() or '1'
+                unified_colorbar = (cb_choice == '2')
+
                 results = auto_group_ersp_analysis(
                     subject_ids         = subject_ids,
                     pkl_dir             = PKL_DIR,
@@ -1207,6 +1213,9 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                     output_dir          = OUTPUT_DIR,
                     do_permutation_test = do_permutation,
                     n_permutations      = 1000,
+                    unified_colorbar    = unified_colorbar,
+                    display_label1      = 'low'  if analysis_type == '2' else None,
+                    display_label2      = 'high' if analysis_type == '2' else None,
                 )
 
                 n_done = sum(1 for v in results.values() if v)
