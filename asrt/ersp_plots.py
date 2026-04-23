@@ -141,26 +141,24 @@ def plot_learning_comparison(results, subject_id, lock_type, output_dir, block_l
     _block_str    = f" | {block_label}" if block_label else ""
 
     cond_keys = list(results.keys())
-    cond1, cond2 = cond_keys[0], cond_keys[1]
-    roi_names = list(results[cond1].keys())
+    roi_names = list(results[cond_keys[0]].keys())
 
     for roi_name in roi_names:
         if 'high' in cond_keys:
-            data_left  = results[cond1][roi_name]  # high
-            data_right = results[cond2][roi_name]  # low
+            data_left  = results['high'][roi_name]
+            data_right = results['low'][roi_name]
+            label_left, label_right = 'high', 'low'
         else:
-            data_left  = results[cond2][roi_name]  # Regular
-            data_right = results[cond1][roi_name]  # Random
+            data_left  = results['Regular'][roi_name]
+            data_right = results['Random'][roi_name]
+            label_left, label_right = 'Regular', 'Random' 
 
         diff_power = data_left['power'] - data_right['power']
 
         times = data_left['times'] * 1000
         freqs = data_left['freqs']
 
-        if lock_type == 'stimulus':
-            x_min, x_max = -500, 300
-        else:  # response
-            x_min, x_max = -500, 200
+        x_min, x_max = -500, 500
 
         t_mask = (times >= x_min) & (times <= x_max)
 
@@ -177,8 +175,9 @@ def plot_learning_comparison(results, subject_id, lock_type, output_dir, block_l
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
         def _panel(ax, power, title, vmin, vmax, xlabel=False):
+            levels = np.linspace(vmin, vmax, 20)
             im = ax.contourf(times, freqs, power,
-                             levels=20, cmap='RdBu_r',
+                             levels=levels, cmap='RdBu_r',
                              vmin=vmin, vmax=vmax, extend='both')
             ax.axvline(0, color='black', linestyle='--', linewidth=1.5)
             ax.set_title(title, fontsize=12, fontweight='bold')
@@ -189,14 +188,14 @@ def plot_learning_comparison(results, subject_id, lock_type, output_dir, block_l
             ax.set_ylim([freqs[0], freqs[-1]])
             return im
 
-        im1 = _panel(axes[0], data_left['power'], cond2, vmin_cond, vmax_cond)
+        im1 = _panel(axes[0], data_left['power'], label_left, vmin_cond, vmax_cond)
         plt.colorbar(im1, ax=axes[0], label='Power (dB)')
 
-        im2 = _panel(axes[1], data_right['power'], cond1, vmin_cond, vmax_cond)
+        im2 = _panel(axes[1], data_right['power'], label_right, vmin_cond, vmax_cond)
         plt.colorbar(im2, ax=axes[1], label='Power (dB)')
 
         im3 = _panel(axes[2], diff_power,
-                     f'Difference ({cond2} - {cond1})', vmin_diff, vmax_diff, xlabel=True)
+                     f'Difference ({label_left} - {label_right})', vmin_diff, vmax_diff, xlabel=True)
         plt.colorbar(im3, ax=axes[2], label='Power diff (dB)')
 
         fig.suptitle(
@@ -230,26 +229,24 @@ def plot_testing_comparison(results, subject_id, lock_type, test_type, output_di
     phase_label   = f"Testing: {test_type.capitalize()}"
 
     cond_keys = list(results.keys())
-    cond1, cond2 = cond_keys[0], cond_keys[1]
-    roi_names = list(results[cond1].keys())
+    roi_names = list(results[cond_keys[0]].keys())
 
     for roi_name in roi_names:
         if 'high' in cond_keys:
-            data_left  = results[cond1][roi_name]  # high
-            data_right = results[cond2][roi_name]  # low
+            data_left  = results['high'][roi_name]
+            data_right = results['low'][roi_name]
+            label_left, label_right = 'high', 'low'
         else:
-            data_left  = results[cond2][roi_name]  # Regular
-            data_right = results[cond1][roi_name]  # Random
+            data_left  = results['Regular'][roi_name]
+            data_right = results['Random'][roi_name]
+            label_left, label_right = 'Regular', 'Random' 
 
         diff_power = data_left['power'] - data_right['power']
 
         times = data_left['times'] * 1000
         freqs = data_left['freqs']
 
-        if lock_type == 'stimulus':
-            x_min, x_max = -500, 300
-        else:  # response
-            x_min, x_max = -500, 200
+        x_min, x_max = -500, 500
 
         t_mask = (times >= x_min) & (times <= x_max)
 
@@ -265,8 +262,9 @@ def plot_testing_comparison(results, subject_id, lock_type, test_type, output_di
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
         def _panel(ax, power, title, vmin, vmax, xlabel=False):
+            levels = np.linspace(vmin, vmax, 20)
             im = ax.contourf(times, freqs, power,
-                             levels=20, cmap='RdBu_r',
+                             levels=levels, cmap='RdBu_r',
                              vmin=vmin, vmax=vmax, extend='both')
             ax.axvline(0, color='black', linestyle='--', linewidth=1.5)
             ax.set_title(title, fontsize=12, fontweight='bold')
@@ -277,14 +275,14 @@ def plot_testing_comparison(results, subject_id, lock_type, test_type, output_di
             ax.set_ylim([freqs[0], freqs[-1]])
             return im
 
-        im1 = _panel(axes[0], data_left['power'], cond2, vmin_cond, vmax_cond)
+        im1 = _panel(axes[0], data_left['power'], label_left, vmin_cond, vmax_cond)
         plt.colorbar(im1, ax=axes[0], label='Power (dB)')
 
-        im2 = _panel(axes[1], data_right['power'], cond1, vmin_cond, vmax_cond)
+        im2 = _panel(axes[1], data_right['power'], label_right, vmin_cond, vmax_cond)
         plt.colorbar(im2, ax=axes[1], label='Power (dB)')
 
         im3 = _panel(axes[2], diff_power,
-                     f'Difference ({cond2} - {cond1})', vmin_diff, vmax_diff, xlabel=True)
+                     f'Difference ({label_left} - {label_right})', vmin_diff, vmax_diff, xlabel=True)
         plt.colorbar(im3, ax=axes[2], label='Power diff (dB)')
 
         fig.suptitle(

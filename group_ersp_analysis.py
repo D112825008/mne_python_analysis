@@ -331,6 +331,182 @@ def _load_group_data(subject_ids, pkl_dir, lock_type, phase,
 # 4. 繪圖
 # ============================================================
 
+
+def _load_h5_single_electrode(filepath, electrode_name):
+    """讀取 MNE AverageTFR h5，提取單一電極 ERSP (n_freqs, n_times)。"""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tfr_list = mne.time_frequency.read_tfrs(str(filepath))
+    tfr = tfr_list[0] if isinstance(tfr_list, list) else tfr_list
+
+    ch_upper = [ch.upper() for ch in tfr.ch_names]
+    elec_upper = electrode_name.upper()
+    if elec_upper not in ch_upper:
+        raise ValueError(f"電極 '{electrode_name}' 不在檔案中。可用: {tfr.ch_names}")
+    idx = ch_upper.index(elec_upper)
+    return tfr.data[idx], tfr.freqs, tfr.times
+
+
+def _plot_single_electrode_comparison(arr_left, arr_right, freqs, times,
+                                       common_ids, suptitle, output_path,
+                                       electrode_name,
+                                       label_left='Regular', label_right='Random'):
+    """產生單一電極群體比較圖：left | right | Difference。"""
+    n_sub      = len(common_ids)
+    left_mean  = arr_left.mean(axis=0)
+    right_mean = arr_right.mean(axis=0)
+    diff       = left_mean - right_mean
+
+    x_min, x_max = -0.5, 0.5
+    t_mask = (times >= x_min) & (times <= x_max)
+
+    combined  = np.concatenate([left_mean[:, t_mask].ravel(), right_mean[:, t_mask].ravel()])
+    vmax_cond = np.percentile(np.abs(combined), 95)
+    vmax_diff = np.percentile(np.abs(diff[:, t_mask].ravel()), 95)
+
+    lv_c = np.linspace(-vmax_cond, vmax_cond, 20)
+    lv_d = np.linspace(-vmax_diff, vmax_diff, 20)
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    for ax, data, title, lv, vm, cb_lbl in [
+        (axes[0], left_mean,  f'{label_left}\n(N={n_sub})',                    lv_c, vmax_cond, 'Power (dB)'),
+        (axes[1], right_mean, f'{label_right}\n(N={n_sub})',                   lv_c, vmax_cond, 'Power (dB)'),
+        (axes[2], diff,       f'Difference ({label_left} - {label_right})',     lv_d, vmax_diff, 'Power Difference (dB)'),
+    ]:
+        im = ax.contourf(times, freqs, data, levels=lv,
+                         cmap='RdBu_r', vmin=-vm, vmax=vm, extend='both')
+        ax.axvline(0, color='black', linestyle='--', linewidth=1.5)
+        ax.axhline(8,  color='white', linestyle=':', linewidth=1, alpha=0.6)
+        ax.axhline(13, color='white', linestyle=':', linewidth=1, alpha=0.6)
+        ax.set_xlabel('Time (s)', fontsize=11)
+        ax.set_ylabel('Frequency (Hz)', fontsize=11)
+        ax.set_title(title, fontsize=11, fontweight='bold')
+        ax.set_xlim([x_min, x_max])
+        plt.colorbar(im, ax=ax, label=cb_lbl)
+
+    fig.suptitle(f'Group ERSP Comparison\n{suptitle} | Electrode: {electrode_name}',
+                 fontsize=12, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f"    ✓ Saved: {output_path}")
+
+
+def run_single_electrode_group_analysis(subject_ids, electrodes,
+                                         h5_dir, output_dir,
+                                         label_left='Regular', label_right='Random',
+                                         condition_left='Regular', condition_right='Random'):
+    """
+    對指定電極執行群體單一電極 ERSP 分析。
+    同時處理 Response-locked（h5 全通道）和 Stimulus-locked（h5 全通道，需先跑 option 15）。
+
+    輸出目錄：output_dir/electrode_{Fz}/
+    """
+    h5_path    = Path(h5_dir)
+    output_path = Path(output_dir)
+
+    for electrode in electrodes:
+        print(f"\n{'='*60}")
+        print(f"  Single Electrode: {electrode}")
+        print(f"{'='*60}")
+
+        elec_out = output_path / f'electrode_{electrode}'
+        elec_out.mkdir(parents=True, exist_ok=True)
+
+        for lock_type in ('Response', 'Stimulus'):
+            print(f"\n  [{lock_type}-locked]")
+
+            # ── Learning ──
+            for (bs, be) in LEARNING_GROUPS:
+                gl = f'Block{bs}-{be}'
+                arr_l, arr_r, ids_found = [], [], []
+                freqs = times = None
+
+                for sid in subject_ids:
+                    fp_l = h5_path / f'{sid}_{lock_type}_Learning_{gl}_{condition_left}_ERSP.h5'
+                    fp_r = h5_path / f'{sid}_{lock_type}_Learning_{gl}_{condition_right}_ERSP.h5'
+                    if not fp_l.exists() or not fp_r.exists():
+                        print(f"    ✗ {sid} {gl}: 檔案不存在（{lock_type}）")
+                        continue
+                    try:
+                        el, f, t = _load_h5_single_electrode(fp_l, electrode)
+                        er, _, _ = _load_h5_single_electrode(fp_r, electrode)
+                        arr_l.append(el); arr_r.append(er)
+                        if freqs is None: freqs, times = f, t
+                        ids_found.append(sid)
+                    except Exception as e:
+                        print(f"    ✗ {sid}: {e}")
+
+                if not arr_l:
+                    continue
+
+                suptitle = f'Learning | {gl} | {lock_type}-locked'
+                out_name = f'group_learning_{lock_type.lower()}_{electrode}_{gl}_comparison.png'
+                _plot_single_electrode_comparison(
+                    np.array(arr_l), np.array(arr_r), freqs, times,
+                    ids_found, suptitle, elec_out / out_name, electrode,
+                    label_left=label_left, label_right=label_right)
+
+            # ── Testing ──
+            for test_type in ('motor', 'perceptual'):
+                cond_name = 'MotorTest' if test_type == 'motor' else 'PerceptualTest'
+
+                # 取得每位受試者的 block 對應（用 condition_left 掃描）
+                sub_blocks = {}
+                for sid in subject_ids:
+                    files = sorted(
+                        h5_path.glob(f'{sid}_{lock_type}_{cond_name}_Block*_{condition_left}_ERSP.h5'),
+                        key=lambda fp: int(''.join(filter(str.isdigit,
+                            fp.stem.split('Block')[1].split('_')[0].split('-')[0])))
+                    )
+                    if files:
+                        n = len(files); half = max(n // 2, 1)
+                        sub_blocks[sid] = {'first': files[:half], 'second': files[half:]}
+
+                pair_labels = {
+                    'first':  f'Early {test_type.capitalize()}',
+                    'second': f'Late {test_type.capitalize()}',
+                }
+
+                for pair_key, pair_desc in pair_labels.items():
+                    arr_l, arr_r, ids_found = [], [], []
+                    freqs = times = None
+
+                    for sid in subject_ids:
+                        if sid not in sub_blocks or not sub_blocks[sid].get(pair_key):
+                            continue
+                        try:
+                            els, ers = [], []
+                            for fp_l in sub_blocks[sid][pair_key]:
+                                fp_r = Path(str(fp_l).replace(
+                                    f'_{condition_left}_', f'_{condition_right}_'))
+                                if not fp_r.exists():
+                                    continue
+                                el, f, t = _load_h5_single_electrode(fp_l, electrode)
+                                er, _, _ = _load_h5_single_electrode(fp_r, electrode)
+                                els.append(el); ers.append(er)
+                                if freqs is None: freqs, times = f, t
+                            if els and ers:
+                                arr_l.append(np.mean(els, axis=0))
+                                arr_r.append(np.mean(ers, axis=0))
+                                ids_found.append(sid)
+                        except Exception as e:
+                            print(f"    ✗ {sid}: {e}")
+
+                    if not arr_l:
+                        continue
+
+                    suptitle = f'Testing | {test_type.capitalize()} | {pair_desc} | {lock_type}-locked'
+                    out_name = f'group_testing_{lock_type.lower()}_{electrode}_{test_type}_{pair_key}_comparison.png'
+                    _plot_single_electrode_comparison(
+                        np.array(arr_l), np.array(arr_r), freqs, times,
+                        ids_found, suptitle, elec_out / out_name, electrode,
+                        label_left=label_left, label_right=label_right)
+
+    print(f"\n✓ 單一電極群體分析完成，輸出: {output_path}")
+
+
 def _draw_ersp_panel(ax, ersp_2d, freqs, times, title, vmin, vmax, x_min=-0.5, x_max=0.2):
     levels = np.linspace(vmin, vmax, 20)   # ← 改這行
     im = ax.contourf(
@@ -366,11 +542,8 @@ def _plot_group_block(arr_reg, arr_ran, freqs, times,
     ran_mean = arr_ran.mean(axis=0)
     diff     = reg_mean - ran_mean   # Regular − Random
 
-    # ── xlim 依 lock_type ──
-    if lock_type == 'stimulus':
-        x_min, x_max = -0.5, 0.3
-    else:
-        x_min, x_max = -0.5, 0.2
+    # ── xlim ──
+    x_min, x_max = -0.5, 0.5
 
     t_mask = (times >= x_min) & (times <= x_max)
 
@@ -525,10 +698,7 @@ def group_ersp_analysis(subject_ids,
         global_vmax_cond = None
         global_vmax_diff = None
         if unified_colorbar:
-            if lock_type == 'stimulus':
-                _xmin, _xmax = -0.5, 0.3
-            else:
-                _xmin, _xmax = -0.5, 0.2
+            _xmin, _xmax = -0.5, 0.5
             _gvc, _gvd = 0.0, 0.0
             for (_bs, _be) in LEARNING_GROUPS:
                 _gl = f"Block{_bs}-{_be}"
@@ -625,10 +795,7 @@ def group_ersp_analysis(subject_ids,
         global_vmax_cond = None
         global_vmax_diff = None
         if unified_colorbar:
-            if lock_type == 'stimulus':
-                _xmin, _xmax = -0.5, 0.3
-            else:
-                _xmin, _xmax = -0.5, 0.2
+            _xmin, _xmax = -0.5, 0.5
             _gvc, _gvd = 0.0, 0.0
             for _pair in ('first', 'second'):
                 _el1, _el2, _times = [], [], None

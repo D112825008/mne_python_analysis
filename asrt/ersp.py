@@ -418,15 +418,24 @@ def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='sti
         n_cycles = freqs / 2.0  # 頻率相依 (4Hz用2 cycles, 30Hz用15 cycles)
     
     # === 3. 根據 phase 分析 ===
+    # baseline_window（用於全通道 h5 儲存）
+    _bw = (-0.5, -0.1) if lock_type == 'stimulus' else (-1.0, -0.6)
+
     if phase.lower() == 'learning':
         results = _ersp_learning_phase(
             epochs, subject_id, lock_type, freqs, n_cycles, output_dir,
             do_td_baseline=do_td_baseline, baseline_method=baseline_method,
+            save_for_group=save_for_group_analysis,
+            group_data_dir=group_data_dir,
+            baseline_window=_bw,
         )
     elif phase.lower() == 'testing':
         results = _ersp_testing_phase(
             epochs, subject_id, lock_type, freqs, n_cycles, output_dir,
             do_td_baseline=do_td_baseline, baseline_method=baseline_method,
+            save_for_group=save_for_group_analysis,
+            group_data_dir=group_data_dir,
+            baseline_window=_bw,
         )
     else:
         raise ValueError(f"Unknown phase: {phase}. Use 'learning' or 'testing'")
@@ -511,7 +520,42 @@ def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='sti
     
     return results
 
-def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_dir, do_td_baseline=False, baseline_method='pre_stim'):
+
+def _save_fullchannel_stimulus_h5(epochs_subset, freqs, n_cycles, baseline_method,
+                                   subject_id, phase_label, group_label, trial_type,
+                                   group_data_dir, baseline_window=(-0.5, -0.1)):
+    """
+    對 epochs_subset 跑全通道 Morlet TFR，以 MNE AverageTFR 格式儲存為 h5。
+    供 Stimulus-locked 單一電極群體分析使用。
+    """
+    import os
+    from pathlib import Path
+    os.makedirs(group_data_dir, exist_ok=True)
+
+    scalp_epochs = epochs_subset.copy().pick_types(eeg=True, exclude=[])
+    print(f"      → 全通道 Stimulus h5（{len(scalp_epochs)} trials, {len(scalp_epochs.ch_names)} ch）")
+
+    power = mne.time_frequency.tfr_morlet(
+        scalp_epochs,
+        freqs=freqs,
+        n_cycles=n_cycles,
+        use_fft=True,
+        return_itc=False,
+        average=True,
+        n_jobs=1,
+    )
+    if baseline_method == 'whole_epoch':
+        power.apply_baseline(mode='logratio', baseline=(None, None))
+    else:
+        power.apply_baseline(mode='logratio', baseline=baseline_window)
+
+    fname = f"{subject_id}_Stimulus_{phase_label}_{group_label}_{trial_type}_ERSP.h5"
+    out_path = Path(group_data_dir) / fname
+    power.save(str(out_path), overwrite=True)
+    print(f"      ✓ 已儲存: {out_path}")
+
+
+def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_dir, do_td_baseline=False, baseline_method='pre_stim', save_for_group=False, group_data_dir=None, baseline_window=(-0.5, -0.1)):
     """
     Learning 階段 ERSP 分析
 
@@ -576,6 +620,13 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
                 )
                 group_results[trial_type] = power_dict
 
+                if save_for_group and group_data_dir and lock_type == 'stimulus':
+                    _save_fullchannel_stimulus_h5(
+                        epochs_subset, freqs, n_cycles, baseline_method,
+                        subject_id, 'Learning', group_label, trial_type,
+                        group_data_dir, baseline_window=baseline_window,
+                    )
+
             results[group_label] = group_results
 
             available = list(group_results.keys())
@@ -610,7 +661,7 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
     return results
 
 
-def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_dir, do_td_baseline=False, baseline_method='pre_stim'):
+def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_dir, do_td_baseline=False, baseline_method='pre_stim', save_for_group=False, group_data_dir=None, baseline_window=(-0.5, -0.1)):
     """
     Testing 階段 ERSP 分析
 
@@ -687,6 +738,14 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
                     )
                     test_results[trial_type] = power_dict
                     results[group_label][test_type][trial_type] = power_dict
+
+                    if save_for_group and group_data_dir and lock_type == 'stimulus':
+                        phase_label = 'MotorTest' if test_type == 'motor' else 'PerceptualTest'
+                        _save_fullchannel_stimulus_h5(
+                            epochs_subset, freqs, n_cycles, baseline_method,
+                            subject_id, phase_label, group_label, trial_type,
+                            group_data_dir, baseline_window=baseline_window,
+                        )
 
                 if len(test_results) >= 2:
                     plot_testing_comparison(

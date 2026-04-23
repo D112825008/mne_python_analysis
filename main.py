@@ -1096,6 +1096,91 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                         if save_for_group:
                             print(f"群體分析資料已儲存至: C:\\Experiment\\Result\\h5")
 
+                # ── 單一電極個人圖（Stimulus-locked）──
+                if save_for_group:
+                    print("\n" + "─"*60)
+                    elec_choice15 = input("是否產生單一電極 Stimulus ERSP 比較圖？(y/n) [n]: ").strip().lower() or 'n'
+                    if elec_choice15 == 'y':
+                        elec_input15 = input("請輸入電極名稱（逗號分隔，例如: Fz,Cz,Pz）: ").strip()
+                        if elec_input15:
+                            electrodes15 = [e.strip() for e in elec_input15.split(',') if e.strip()]
+                            _h5_dir15 = r'C:\Experiment\Result\h5'
+
+                            is_triplet15 = (
+                                hasattr(stim_epochs, 'metadata') and
+                                stim_epochs.metadata is not None and
+                                'classification' in stim_epochs.metadata.columns and
+                                stim_epochs.metadata['classification'].iloc[0] == 'triplet'
+                            )
+                            lbl_left15  = 'high' if is_triplet15 else 'Regular'
+                            lbl_right15 = 'low'  if is_triplet15 else 'Random'
+
+                            elec_out15 = os.path.join(_h5_dir15, '..', 'single_electrode')
+                            os.makedirs(elec_out15, exist_ok=True)
+
+                            import glob as _glob15
+                            import numpy as _np15
+                            import matplotlib.pyplot as _plt15
+                            from mne_python_analysis.group_ersp_analysis import _load_h5_single_electrode
+
+                            h5_files_reg15 = sorted(_glob15.glob(
+                                os.path.join(_h5_dir15, f'{analysis_sid}_Stimulus_*_Regular_ERSP.h5')))
+
+                            for electrode15 in electrodes15:
+                                print(f"\n  電極: {electrode15}")
+                                for fp_l15 in h5_files_reg15:
+                                    fp_r15 = fp_l15.replace('_Regular_', '_Random_')
+                                    if not os.path.exists(fp_r15):
+                                        continue
+                                    try:
+                                        el15, freqs15, times15 = _load_h5_single_electrode(fp_l15, electrode15)
+                                        er15, _, _             = _load_h5_single_electrode(fp_r15, electrode15)
+                                    except Exception as ex15:
+                                        print(f"    ⚠ {os.path.basename(fp_l15)}: {ex15}")
+                                        continue
+
+                                    diff15 = el15 - er15
+                                    x_min15, x_max15 = -0.5, 0.5
+                                    t_mask15 = (times15 >= x_min15) & (times15 <= x_max15)
+                                    combined15 = _np15.concatenate([el15[:, t_mask15].ravel(), er15[:, t_mask15].ravel()])
+                                    vmax15_c = _np15.percentile(_np15.abs(combined15), 95)
+                                    vmax15_d = _np15.percentile(_np15.abs(diff15[:, t_mask15].ravel()), 95)
+                                    lv15_c = _np15.linspace(-vmax15_c, vmax15_c, 20)
+                                    lv15_d = _np15.linspace(-vmax15_d, vmax15_d, 20)
+
+                                    base15 = os.path.basename(fp_l15).replace('_ERSP.h5', '').replace(f'{analysis_sid}_Stimulus_', '')
+                                    block_label15 = '_'.join(base15.split('_')[:-1])
+
+                                    fig15, axes15 = _plt15.subplots(1, 3, figsize=(18, 5))
+                                    for ax15, data15, title15, lv15, vm15, cbl15 in [
+                                        (axes15[0], el15,   f'{lbl_left15}',                          lv15_c, vmax15_c, 'Power (dB)'),
+                                        (axes15[1], er15,   f'{lbl_right15}',                         lv15_c, vmax15_c, 'Power (dB)'),
+                                        (axes15[2], diff15, f'Difference ({lbl_left15} - {lbl_right15})', lv15_d, vmax15_d, 'Power Difference (dB)'),
+                                    ]:
+                                        im15 = ax15.contourf(times15, freqs15, data15, levels=lv15,
+                                                             cmap='RdBu_r', vmin=-vm15, vmax=vm15, extend='both')
+                                        ax15.axvline(0, color='black', linestyle='--', linewidth=1.5)
+                                        ax15.axhline(8,  color='white', linestyle=':', linewidth=1, alpha=0.6)
+                                        ax15.axhline(13, color='white', linestyle=':', linewidth=1, alpha=0.6)
+                                        ax15.set_xlabel('Time (s)', fontsize=11)
+                                        ax15.set_ylabel('Frequency (Hz)', fontsize=11)
+                                        ax15.set_title(title15, fontsize=11, fontweight='bold')
+                                        ax15.set_xlim([x_min15, x_max15])
+                                        _plt15.colorbar(im15, ax=ax15, label=cbl15)
+
+                                    fig15.suptitle(
+                                        f'{analysis_sid} | Stimulus-locked | {block_label15} | Electrode: {electrode15}',
+                                        fontsize=12, fontweight='bold'
+                                    )
+                                    _plt15.tight_layout()
+                                    out_fig15 = os.path.join(elec_out15,
+                                        f'{analysis_sid}_stimulus_{electrode15}_{block_label15}_comparison.png')
+                                    fig15.savefig(out_fig15, dpi=300, bbox_inches='tight')
+                                    _plt15.close(fig15)
+                                    print(f"    ✓ 已儲存: {out_fig15}")
+
+                            processing_history.append(f"單一電極個人圖 Stimulus（{elec_input15}）")
+
             except Exception as e:
                 print(f"\nERSP 分析時發生錯誤: {str(e)}")
                 import traceback
@@ -1222,6 +1307,33 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                 processing_history.append(
                     f"ASRT 群體分析（全自動，{len(subject_ids)} 位受試者，{n_done} 個組合完成）"
                 )
+
+                # ── 單一電極群體分析 ──
+                print("\n" + "─"*60)
+                elec_choice = input("是否進行單一電極群體分析？(y/n) [n]: ").strip().lower() or 'n'
+                if elec_choice == 'y':
+                    elec_input = input("請輸入電極名稱（逗號分隔，例如: Fz,Cz,Pz）: ").strip()
+                    if elec_input:
+                        electrodes = [e.strip() for e in elec_input.split(',') if e.strip()]
+                        elec_out = os.path.join(OUTPUT_DIR, 'single_electrode')
+
+                        if analysis_type == '2':
+                            lbl_left, lbl_right = 'high', 'low'
+                        else:
+                            lbl_left, lbl_right = 'Regular', 'Random'
+
+                        from mne_python_analysis.group_ersp_analysis import run_single_electrode_group_analysis
+                        run_single_electrode_group_analysis(
+                            subject_ids     = subject_ids,
+                            electrodes      = electrodes,
+                            h5_dir          = H5_DIR,
+                            output_dir      = elec_out,
+                            label_left      = lbl_left,
+                            label_right     = lbl_right,
+                            condition_left  = 'Regular',
+                            condition_right = 'Random',
+                        )
+                        processing_history.append(f"單一電極群體分析（{', '.join(electrodes)}）")
 
             except ImportError:
                 print("❌ 群體分析模組未安裝")
@@ -1358,74 +1470,95 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                     baseline_method=baseline_method,
                 )
                 
-                # ===== 繪圖 =====
-                print("\n" + "-"*70)
-                print("繪製結果")
-                print("-"*70)
-                
-                plot_result = input("\n是否繪製 ERSP？(y/n) [y]: ").strip().lower() or 'y'
-                
-                if plot_result == 'y':
-                    import matplotlib.pyplot as plt
-                    
-                    # 選擇要繪製的 channels
-                    print("\n選擇要繪製的 channels:")
-                    print("  1. Fz, Cz, Pz")
-                    print("  2. 自訂")
-                    
-                    ch_choice = input("請選擇 (1/2) [1]: ").strip() or '1'
-                    
-                    if ch_choice == '1':
-                        picks = ['Fz', 'Cz', 'Pz']
-                    else:
-                        ch_input = input("輸入 channel 名稱（逗號分隔）: ").strip()
-                        picks = [ch.strip() for ch in ch_input.split(',')]
-                    
-                    # 繪圖
-
-                    # 統一成 {cond_name: power} 的 dict，方便後續處理
-                    if isinstance(power_response, dict):
-                        power_dict = power_response
-                    else:
-                        power_dict = {'ERSP': power_response}
-
-                    for cond_name, power_obj in power_dict.items():
-                        figs = power_obj.plot(
-                            picks=picks,
-                            baseline=None,
-                            mode=None,
-                            title=f'Response-locked ERSP – {cond_name}',
-                            show=False
-                        )
-
-                        plt.show()
-
-                        # 儲存圖片
-                        if output_dir and subject_id:
-                            os.makedirs(output_dir, exist_ok=True)
-
-                            # 處理單一或多個 figures（每個 channel 一張）
-                            if isinstance(figs, list):
-                                for i, fig in enumerate(figs):
-                                    ch_name = picks[i] if i < len(picks) else str(i)
-                                    fig_file = os.path.join(
-                                        output_dir,
-                                        f"{subject_id}_response_ersp_{cond_name}_{ch_name}.png"
-                                    )
-                                    fig.savefig(fig_file, dpi=300, bbox_inches='tight')
-                                    print(f"  ✓ 已儲存: {fig_file}")
-                            else:
-                                fig_file = os.path.join(
-                                    output_dir,
-                                    f"{subject_id}_response_ersp_{cond_name}.png"
-                                )
-                                figs.savefig(fig_file, dpi=300, bbox_inches='tight')
-                                print(f"  ✓ 已儲存: {fig_file}")
-                
                 print("\n✓ Response ERSP 分析完成！")
                 processing_history.append(
                     "Response ERSP 分析 (Stimulus baseline → Response 對齊 → 整段平均)"
                 )
+
+                # ── 單一電極個人圖 ──
+                if output_dir and subject_id:
+                    print("\n" + "─"*60)
+                    elec_choice16 = input("是否產生單一電極 ERSP 比較圖？(y/n) [n]: ").strip().lower() or 'n'
+                    if elec_choice16 == 'y':
+                        elec_input16 = input("請輸入電極名稱（逗號分隔，例如: Fz,Cz,Pz）: ").strip()
+                        if elec_input16:
+                            electrodes16 = [e.strip() for e in elec_input16.split(',') if e.strip()]
+
+                            is_triplet_mode = (
+                                hasattr(current_epochs, 'metadata') and
+                                current_epochs.metadata is not None and
+                                'classification' in current_epochs.metadata.columns and
+                                current_epochs.metadata['classification'].iloc[0] == 'triplet'
+                            )
+                            lbl_left16  = 'high' if is_triplet_mode else 'Regular'
+                            lbl_right16 = 'low'  if is_triplet_mode else 'Random'
+
+                            elec_out16 = r'C:\Experiment\Result\single_electrode'
+                            os.makedirs(elec_out16, exist_ok=True)
+
+                            import glob as _glob16
+                            import numpy as _np16
+                            import matplotlib.pyplot as _plt16
+                            from mne_python_analysis.group_ersp_analysis import _load_h5_single_electrode
+
+                            _h5_search_dir = r'C:\Experiment\Result\h5'
+                            h5_files_reg = sorted(_glob16.glob(
+                                os.path.join(r'C:\Experiment\Result\h5', f'{subject_id}_Response_*_Regular_ERSP.h5')))
+
+                            for electrode16 in electrodes16:
+                                print(f"\n  電極: {electrode16}")
+                                for fp_l in h5_files_reg:
+                                    fp_r = fp_l.replace('_Regular_', '_Random_')
+                                    if not os.path.exists(fp_r):
+                                        continue
+                                    try:
+                                        el, freqs_e, times_e = _load_h5_single_electrode(fp_l, electrode16)
+                                        er, _, _             = _load_h5_single_electrode(fp_r, electrode16)
+                                    except Exception as ex:
+                                        print(f"    ⚠ {os.path.basename(fp_l)}: {ex}")
+                                        continue
+
+                                    diff_e = el - er
+                                    x_min_e, x_max_e = -0.5, 0.5
+                                    t_mask_e = (times_e >= x_min_e) & (times_e <= x_max_e)
+                                    combined_e = _np16.concatenate([el[:, t_mask_e].ravel(), er[:, t_mask_e].ravel()])
+                                    vmax_e = _np16.percentile(_np16.abs(combined_e), 95)
+                                    vmax_d = _np16.percentile(_np16.abs(diff_e[:, t_mask_e].ravel()), 95)
+                                    lv_c = _np16.linspace(-vmax_e, vmax_e, 20)
+                                    lv_d = _np16.linspace(-vmax_d, vmax_d, 20)
+
+                                    base = os.path.basename(fp_l).replace('_ERSP.h5', '').replace(f'{subject_id}_Response_', '')
+                                    block_label16 = '_'.join(base.split('_')[:-1])
+
+                                    fig16, axes16 = _plt16.subplots(1, 3, figsize=(18, 5))
+                                    for ax16, data16, title16, lv16, vm16, cbl16 in [
+                                        (axes16[0], el,     f'{lbl_left16}',                        lv_c, vmax_e, 'Power (dB)'),
+                                        (axes16[1], er,     f'{lbl_right16}',                       lv_c, vmax_e, 'Power (dB)'),
+                                        (axes16[2], diff_e, f'Difference ({lbl_left16} - {lbl_right16})', lv_d, vmax_d, 'Power Difference (dB)'),
+                                    ]:
+                                        im16 = ax16.contourf(times_e, freqs_e, data16, levels=lv16,
+                                                             cmap='RdBu_r', vmin=-vm16, vmax=vm16, extend='both')
+                                        ax16.axvline(0, color='black', linestyle='--', linewidth=1.5)
+                                        ax16.axhline(8,  color='white', linestyle=':', linewidth=1, alpha=0.6)
+                                        ax16.axhline(13, color='white', linestyle=':', linewidth=1, alpha=0.6)
+                                        ax16.set_xlabel('Time (s)', fontsize=11)
+                                        ax16.set_ylabel('Frequency (Hz)', fontsize=11)
+                                        ax16.set_title(title16, fontsize=11, fontweight='bold')
+                                        ax16.set_xlim([x_min_e, x_max_e])
+                                        _plt16.colorbar(im16, ax=ax16, label=cbl16)
+
+                                    fig16.suptitle(
+                                        f'{subject_id} | Response-locked | {block_label16} | Electrode: {electrode16}',
+                                        fontsize=12, fontweight='bold'
+                                    )
+                                    _plt16.tight_layout()
+                                    out_fig16 = os.path.join(elec_out16,
+                                        f'{subject_id}_response_{electrode16}_{block_label16}_comparison.png')
+                                    fig16.savefig(out_fig16, dpi=300, bbox_inches='tight')
+                                    _plt16.close(fig16)
+                                    print(f"    ✓ 已儲存: {out_fig16}")
+
+                            processing_history.append(f"單一電極個人圖（{elec_input16}）")
                 
             except ImportError as e:
                 print(f"\n✗ 找不到必要的模組: {e}")

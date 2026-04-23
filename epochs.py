@@ -447,7 +447,7 @@ def epoch_data_asrt(raw, subject_id, trial_classification='trigger'):
         print("\n【2/2】建立 Response-locked Epochs...")
 
         resp_event_codes = RANDOM_RESP + REGULAR_RESP
-        resp_tmin, resp_tmax = -1.5, 0.2
+        resp_tmin, resp_tmax = -1.5, 0.5
         resp_baseline = None
 
         # 預先建立每個 block 內 Stimulus sample → trial_in_block 的對照表
@@ -905,7 +905,7 @@ def create_asrt_epochs(raw, subject_id, behavior_df=None, trial_classification='
     print("選擇 Epoch 類型")
     print("=" * 60)
     print("1. Stimulus-locked  (tmin=-0.8s, tmax=1.0s)")
-    print("2. Response-locked  (tmin=-1.5s, tmax=0.2s)")
+    print("2. Response-locked  (tmin=-1.5s, tmax=0.5s)")
     print("3. 兩者都建立（推薦）")
     while True:
         ec = input("\n請選擇 (1/2/3) [預設 3]: ").strip() or "3"
@@ -1200,7 +1200,7 @@ def create_asrt_epochs(raw, subject_id, behavior_df=None, trial_classification='
         all_resp = _collect_trials(RANDOM_RESP + REGULAR_RESP, 'resp')
         resp_trials, _, _ = _assign_types(all_resp, median_count=_shared_median)
         _debug_print(resp_trials, 'resp')
-        epochs_resp = _to_mne(resp_trials, tmin=-1.5, tmax=0.2)
+        epochs_resp = _to_mne(resp_trials, tmin=-1.5, tmax=0.5)
         if epochs_resp is None:
             print("⚠  Response events 篩選後沒有任何事件")
             epochs_resp = None
@@ -1258,7 +1258,7 @@ def create_asrt_epochs(raw, subject_id, behavior_df=None, trial_classification='
     else:
         trials, _, _ = _assign_types(_collect_trials(RANDOM_RESP + REGULAR_RESP, 'resp'))
         _debug_print(trials, 'resp')
-        ep = _to_mne(trials, tmin=-1.5, tmax=0.2)
+        ep = _to_mne(trials, tmin=-1.5, tmax=0.5)
         lock_tag = "resp"
 
     if ep is None:
