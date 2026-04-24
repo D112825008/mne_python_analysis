@@ -504,99 +504,132 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                         ids_found, suptitle, elec_out / out_name, electrode,
                         label_left=label_left, label_right=label_right)
 
-        # ── Pooled Testing (AllBlocks) 單一電極 ──
-        for _test_type in ('motor', 'perceptual'):
-            _cond_name = 'MotorTest' if _test_type == 'motor' else 'PerceptualTest'
+                # ── 各別 Block 群體圖 ──
+                all_block_labels = set()
+                for sid in subject_ids:
+                    for fp in h5_path.glob(f'{sid}_{lock_type}_{cond_name}_Block*_{condition_left}_ERSP.h5'):
+                        all_block_labels.add(fp.stem.split('_')[3])
+                all_block_labels = sorted(all_block_labels,
+                    key=lambda b: int(''.join(filter(str.isdigit, b.split('-')[0]))))
 
-            arr_l, arr_r, ids_found = [], [], []
-            freqs = times = None
+                for blk_label in all_block_labels:
+                    arr_l, arr_r, ids_found = [], [], []
+                    freqs = times = None
+                    for sid in subject_ids:
+                        fp_l = h5_path / f'{sid}_{lock_type}_{cond_name}_{blk_label}_{condition_left}_ERSP.h5'
+                        fp_r = h5_path / f'{sid}_{lock_type}_{cond_name}_{blk_label}_{condition_right}_ERSP.h5'
+                        if not fp_l.exists() or not fp_r.exists():
+                            continue
+                        try:
+                            el, f, t = _load_h5_single_electrode(fp_l, electrode)
+                            er, _, _ = _load_h5_single_electrode(fp_r, electrode)
+                            arr_l.append(el); arr_r.append(er)
+                            if freqs is None: freqs, times = f, t
+                            ids_found.append(sid)
+                        except Exception as e:
+                            print(f"    ✗ {sid} {blk_label}: {e}")
+                    if not arr_l:
+                        continue
+                    suptitle = f'Testing | {test_type.capitalize()} | {blk_label} | {lock_type}-locked'
+                    out_name = f'group_testing_{lock_type.lower()}_{electrode}_{test_type}_{blk_label}_comparison.png'
+                    _plot_single_electrode_comparison(
+                        np.array(arr_l), np.array(arr_r), freqs, times,
+                        ids_found, suptitle, elec_out / out_name, electrode,
+                        label_left=label_left, label_right=label_right)
+
+            # ── Pooled Testing (AllBlocks) 單一電極 ──
+            for _test_type in ('motor', 'perceptual'):
+                _cond_name = 'MotorTest' if _test_type == 'motor' else 'PerceptualTest'
+
+                arr_l, arr_r, ids_found = [], [], []
+                freqs = times = None
+
+                for sid in subject_ids:
+                    fp_l = h5_path / f'{sid}_{lock_type}_{_cond_name}_AllBlocks_{condition_left}_ERSP.h5'
+                    fp_r = h5_path / f'{sid}_{lock_type}_{_cond_name}_AllBlocks_{condition_right}_ERSP.h5'
+                    if not fp_l.exists() or not fp_r.exists():
+                        print(f"    ✗ {sid} {_cond_name} AllBlocks: 檔案不存在（{lock_type}）")
+                        continue
+                    try:
+                        el, f, t = _load_h5_single_electrode(fp_l, electrode)
+                        er, _, _ = _load_h5_single_electrode(fp_r, electrode)
+                        arr_l.append(el); arr_r.append(er)
+                        if freqs is None: freqs, times = f, t
+                        ids_found.append(sid)
+                    except Exception as e:
+                        print(f"    ✗ {sid}: {e}")
+
+                if not arr_l:
+                    continue
+
+                suptitle = f'Testing Pooled | {_test_type.capitalize()} | AllBlocks | {lock_type}-locked'
+                out_name = f'group_pooled_{lock_type.lower()}_{electrode}_{_test_type}_comparison.png'
+                _plot_single_electrode_comparison(
+                    np.array(arr_l), np.array(arr_r), freqs, times,
+                    ids_found, suptitle, elec_out / out_name, electrode,
+                    label_left=label_left, label_right=label_right)
+
+            # ── Motor-Perceptual Diff 單一電極 ──
+            _motor_reg, _motor_ran = {}, {}
+            _percept_reg, _percept_ran = {}, {}
 
             for sid in subject_ids:
-                fp_l = h5_path / f'{sid}_{lock_type}_{_cond_name}_AllBlocks_{condition_left}_ERSP.h5'
-                fp_r = h5_path / f'{sid}_{lock_type}_{_cond_name}_AllBlocks_{condition_right}_ERSP.h5'
-                if not fp_l.exists() or not fp_r.exists():
-                    print(f"    ✗ {sid} {_cond_name} AllBlocks: 檔案不存在（{lock_type}）")
-                    continue
-                try:
-                    el, f, t = _load_h5_single_electrode(fp_l, electrode)
-                    er, _, _ = _load_h5_single_electrode(fp_r, electrode)
-                    arr_l.append(el); arr_r.append(er)
-                    if freqs is None: freqs, times = f, t
-                    ids_found.append(sid)
-                except Exception as e:
-                    print(f"    ✗ {sid}: {e}")
-
-            if not arr_l:
-                continue
-
-            suptitle = f'Testing Pooled | {_test_type.capitalize()} | AllBlocks | {lock_type}-locked'
-            out_name = f'group_pooled_{lock_type.lower()}_{electrode}_{_test_type}_comparison.png'
-            _plot_single_electrode_comparison(
-                np.array(arr_l), np.array(arr_r), freqs, times,
-                ids_found, suptitle, elec_out / out_name, electrode,
-                label_left=label_left, label_right=label_right)
-
-        # ── Motor-Perceptual Diff 單一電極 ──
-        _motor_reg, _motor_ran = {}, {}
-        _percept_reg, _percept_ran = {}, {}
-
-        for sid in subject_ids:
-            for _cn, _store_l, _store_r in [
-                ('MotorTest', _motor_reg, _motor_ran),
-                ('PerceptualTest', _percept_reg, _percept_ran),
-            ]:
-                fp_l = h5_path / f'{sid}_{lock_type}_{_cn}_AllBlocks_{condition_left}_ERSP.h5'
-                fp_r = h5_path / f'{sid}_{lock_type}_{_cn}_AllBlocks_{condition_right}_ERSP.h5'
-                if fp_l.exists():
-                    try: _store_l[sid], _, _ = _load_h5_single_electrode(fp_l, electrode)
-                    except Exception: pass
-                if fp_r.exists():
-                    try: _store_r[sid], _, _ = _load_h5_single_electrode(fp_r, electrode)
-                    except Exception: pass
-
-        _common_mp = [s for s in subject_ids
-                      if s in _motor_reg and s in _motor_ran
-                      and s in _percept_reg and s in _percept_ran]
-        if _common_mp:
-            _fp_ref = h5_path / f'{_common_mp[0]}_{lock_type}_MotorTest_AllBlocks_{condition_left}_ERSP.h5'
-            _freqs_mp = _times_mp = None
-            if _fp_ref.exists():
-                try: _, _freqs_mp, _times_mp = _load_h5_single_electrode(_fp_ref, electrode)
-                except Exception: pass
-            if _freqs_mp is not None:
-                _arr_reg_diff = np.array([_motor_reg[s] - _percept_reg[s] for s in _common_mp])
-                _arr_ran_diff = np.array([_motor_ran[s] - _percept_ran[s] for s in _common_mp])
-                _mp_out = elec_out / f'group_motor_perceptual_diff_{lock_type.lower()}_{electrode}.png'
-                _suptitle_mp = f'Motor-Perceptual Diff | {lock_type}-locked | Electrode: {electrode}'
-                _n = len(_common_mp)
-                _reg_m = _arr_reg_diff.mean(axis=0)
-                _ran_m = _arr_ran_diff.mean(axis=0)
-                _inter = _reg_m - _ran_m
-                _x_min, _x_max = -0.5, 0.5
-                _tm = (_times_mp >= _x_min) & (_times_mp <= _x_max)
-                _vc = np.percentile(np.abs(np.concatenate([_reg_m[:, _tm].ravel(), _ran_m[:, _tm].ravel()])), 95)
-                _vi = np.percentile(np.abs(_inter[:, _tm].ravel()), 95)
-                _fig, _axes = plt.subplots(1, 3, figsize=(18, 5))
-                for _ax, _dat, _tit, _vm, _lv, _cbl in [
-                    (_axes[0], _reg_m, f'{label_left} Motor-Perceptual\n(N={_n})', _vc, np.linspace(-_vc,_vc,20), 'Power diff (dB)'),
-                    (_axes[1], _ran_m, f'{label_right} Motor-Perceptual\n(N={_n})', _vc, np.linspace(-_vc,_vc,20), 'Power diff (dB)'),
-                    (_axes[2], _inter, f'Interaction\n({label_left} M-P) - ({label_right} M-P)', _vi, np.linspace(-_vi,_vi,20), 'Power diff (dB)'),
+                for _cn, _store_l, _store_r in [
+                    ('MotorTest', _motor_reg, _motor_ran),
+                    ('PerceptualTest', _percept_reg, _percept_ran),
                 ]:
-                    _im = _ax.contourf(_times_mp, _freqs_mp, _dat, levels=_lv,
-                                       cmap='RdBu_r', vmin=-_vm, vmax=_vm, extend='both')
-                    _ax.axvline(0, color='black', linestyle='--', linewidth=1.5)
-                    _ax.axhline(8,  color='white', linestyle=':', linewidth=1, alpha=0.6)
-                    _ax.axhline(13, color='white', linestyle=':', linewidth=1, alpha=0.6)
-                    _ax.set_xlabel('Time (s)', fontsize=11)
-                    _ax.set_ylabel('Frequency (Hz)', fontsize=11)
-                    _ax.set_title(_tit, fontsize=11, fontweight='bold')
-                    _ax.set_xlim([_x_min, _x_max])
-                    plt.colorbar(_im, ax=_ax, label=_cbl)
-                _fig.suptitle(f'Group {_suptitle_mp}', fontsize=12, fontweight='bold')
-                plt.tight_layout()
-                plt.savefig(str(_mp_out), dpi=300, bbox_inches='tight')
-                plt.close(_fig)
-                print(f"    ✓ Saved: {_mp_out}")
+                    fp_l = h5_path / f'{sid}_{lock_type}_{_cn}_AllBlocks_{condition_left}_ERSP.h5'
+                    fp_r = h5_path / f'{sid}_{lock_type}_{_cn}_AllBlocks_{condition_right}_ERSP.h5'
+                    if fp_l.exists():
+                        try: _store_l[sid], _, _ = _load_h5_single_electrode(fp_l, electrode)
+                        except Exception: pass
+                    if fp_r.exists():
+                        try: _store_r[sid], _, _ = _load_h5_single_electrode(fp_r, electrode)
+                        except Exception: pass
+
+            _common_mp = [s for s in subject_ids
+                          if s in _motor_reg and s in _motor_ran
+                          and s in _percept_reg and s in _percept_ran]
+            if _common_mp:
+                _fp_ref = h5_path / f'{_common_mp[0]}_{lock_type}_MotorTest_AllBlocks_{condition_left}_ERSP.h5'
+                _freqs_mp = _times_mp = None
+                if _fp_ref.exists():
+                    try: _, _freqs_mp, _times_mp = _load_h5_single_electrode(_fp_ref, electrode)
+                    except Exception: pass
+                if _freqs_mp is not None:
+                    _arr_reg_diff = np.array([_motor_reg[s] - _percept_reg[s] for s in _common_mp])
+                    _arr_ran_diff = np.array([_motor_ran[s] - _percept_ran[s] for s in _common_mp])
+                    _mp_out = elec_out / f'group_motor_perceptual_diff_{lock_type.lower()}_{electrode}.png'
+                    _suptitle_mp = f'Motor-Perceptual Diff | {lock_type}-locked | Electrode: {electrode}'
+                    _n = len(_common_mp)
+                    _reg_m = _arr_reg_diff.mean(axis=0)
+                    _ran_m = _arr_ran_diff.mean(axis=0)
+                    _inter = _reg_m - _ran_m
+                    _x_min, _x_max = -0.5, 0.5
+                    _tm = (_times_mp >= _x_min) & (_times_mp <= _x_max)
+                    _vc = np.percentile(np.abs(np.concatenate([_reg_m[:, _tm].ravel(), _ran_m[:, _tm].ravel()])), 95)
+                    _vi = np.percentile(np.abs(_inter[:, _tm].ravel()), 95)
+                    _fig, _axes = plt.subplots(1, 3, figsize=(18, 5))
+                    for _ax, _dat, _tit, _vm, _lv, _cbl in [
+                        (_axes[0], _reg_m, f'{label_left} Motor-Perceptual\n(N={_n})', _vc, np.linspace(-_vc,_vc,20), 'Power diff (dB)'),
+                        (_axes[1], _ran_m, f'{label_right} Motor-Perceptual\n(N={_n})', _vc, np.linspace(-_vc,_vc,20), 'Power diff (dB)'),
+                        (_axes[2], _inter, f'Interaction\n({label_left} M-P) - ({label_right} M-P)', _vi, np.linspace(-_vi,_vi,20), 'Power diff (dB)'),
+                    ]:
+                        _im = _ax.contourf(_times_mp, _freqs_mp, _dat, levels=_lv,
+                                           cmap='RdBu_r', vmin=-_vm, vmax=_vm, extend='both')
+                        _ax.axvline(0, color='black', linestyle='--', linewidth=1.5)
+                        _ax.axhline(8,  color='white', linestyle=':', linewidth=1, alpha=0.6)
+                        _ax.axhline(13, color='white', linestyle=':', linewidth=1, alpha=0.6)
+                        _ax.set_xlabel('Time (s)', fontsize=11)
+                        _ax.set_ylabel('Frequency (Hz)', fontsize=11)
+                        _ax.set_title(_tit, fontsize=11, fontweight='bold')
+                        _ax.set_xlim([_x_min, _x_max])
+                        plt.colorbar(_im, ax=_ax, label=_cbl)
+                    _fig.suptitle(f'Group {_suptitle_mp}', fontsize=12, fontweight='bold')
+                    plt.tight_layout()
+                    plt.savefig(str(_mp_out), dpi=300, bbox_inches='tight')
+                    plt.close(_fig)
+                    print(f"    ✓ Saved: {_mp_out}")
 
     print(f"\n✓ 單一電極群體分析完成，輸出: {output_path}")
 
