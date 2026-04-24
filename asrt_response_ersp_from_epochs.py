@@ -344,6 +344,24 @@ def response_ersp_from_current_epochs(
             print(f"  ✓ 已儲存：{out_path}")
         results['All'] = {'All': power}
 
+    # ===== 步驟 2b：Pooled Testing Analysis（所有 block 合併）=====
+    pooled_response_results = {}
+    if has_test_type:
+        for _tt_val, _cn in [('motor', 'MotorTest'), ('perceptual', 'PerceptualTest')]:
+            _test_base = (
+                (meta['phase'].values == 'Test') &
+                (meta['test_type'].values == _tt_val)
+            )
+            if _test_base.sum() == 0:
+                print(f"\n  ⚠  {_cn} AllBlocks：沒有資料，跳過")
+                continue
+            print(f"\n{'─'*60}")
+            print(f"  {_cn} AllBlocks  ({_test_base.sum()} trials)  [Pooled]")
+            print(f"{'─'*60}")
+            _grp_pooled = _process_and_save(_cn, 'AllBlocks', _test_base)
+            results[f"{_cn}_AllBlocks"] = _grp_pooled
+            pooled_response_results[_tt_val] = _grp_pooled
+
     # ===== 步驟 3：繪圖 =====
     if plot_dir is None:
         from pathlib import Path
@@ -412,6 +430,42 @@ def response_ersp_from_current_epochs(
                             output_dir=plot_dir,
                             block_label=group_label,
                         )
+
+            # ── Pooled Testing 繪圖 + Motor-Perceptual diff ──
+            for _tt_val, _cn in [('motor', 'MotorTest'), ('perceptual', 'PerceptualTest')]:
+                if _tt_val not in pooled_response_results:
+                    continue
+                _pd_pooled = {}
+                for _tt, _tfr in pooled_response_results[_tt_val].items():
+                    _pd_ = _tfr_to_power_dict(_tfr)
+                    if _pd_:
+                        _pd_pooled[_tt] = _pd_
+                        plot_ersp_lum2023_style(
+                            _pd_,
+                            f"{subject_id}_response_{_cn}_AllBlocks_{_tt}",
+                            plot_dir,
+                        )
+                if len(_pd_pooled) >= 2:
+                    plot_testing_comparison(
+                        _pd_pooled, subject_id, 'response', _tt_val, plot_dir,
+                        block_label='AllBlocks'
+                    )
+
+            # Motor vs Perceptual diff
+            if 'motor' in pooled_response_results and 'perceptual' in pooled_response_results:
+                try:
+                    from asrt.ersp_plots import plot_motor_perceptual_comparison as _plot_mpc
+                    _motor_pd, _percept_pd = {}, {}
+                    for _tt, _tfr in pooled_response_results['motor'].items():
+                        _pd_ = _tfr_to_power_dict(_tfr)
+                        if _pd_: _motor_pd[_tt] = _pd_
+                    for _tt, _tfr in pooled_response_results['perceptual'].items():
+                        _pd_ = _tfr_to_power_dict(_tfr)
+                        if _pd_: _percept_pd[_tt] = _pd_
+                    if len(_motor_pd) >= 2 and len(_percept_pd) >= 2:
+                        _plot_mpc(_motor_pd, _percept_pd, subject_id, 'response', plot_dir)
+                except Exception as _mpc_err:
+                    print(f"  ⚠  Motor-Perceptual diff 繪圖錯誤：{_mpc_err}")
 
         except Exception as _plot_err:
             print(f"  ⚠  繪圖時發生錯誤（不影響 .h5 資料）：{_plot_err}")

@@ -299,3 +299,98 @@ def plot_testing_comparison(results, subject_id, lock_type, test_type, output_di
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         print(f"  ✓ Testing {test_type.capitalize()} {roi_name} 比較圖已儲存: {output_path}")
         plt.close(fig)
+
+def plot_motor_perceptual_comparison(motor_results, perceptual_results,
+                                      subject_id, lock_type, output_dir):
+    """
+    繪製 Motor vs Perceptual 差值比較圖，每個 ROI 各自產一張圖。
+
+    Layout: figsize=(18,5)，3 個 subplot 橫排：
+      Left:   label_left Motor - label_left Perceptual
+      Center: label_right Motor - label_right Perceptual
+      Right:  Interaction = Left - Center
+    """
+    import os
+    os.makedirs(output_dir, exist_ok=True)
+
+    cond_keys = list(motor_results.keys())
+    if 'high' in cond_keys:
+        label_left, label_right = 'high', 'low'
+    else:
+        label_left, label_right = 'Regular', 'Random'
+
+    if label_left not in motor_results or label_left not in perceptual_results:
+        print(f"  ⚠ Motor-Perceptual 差值圖：找不到 {label_left} 資料，跳過")
+        return
+    if label_right not in motor_results or label_right not in perceptual_results:
+        print(f"  ⚠ Motor-Perceptual 差值圖：找不到 {label_right} 資料，跳過")
+        return
+
+    roi_names = [r for r in motor_results[label_left].keys()
+                 if r in perceptual_results.get(label_left, {})]
+
+    for roi_name in roi_names:
+        m_l = motor_results[label_left][roi_name]['power']
+        m_r = motor_results[label_right][roi_name]['power']
+        p_l = perceptual_results[label_left][roi_name]['power']
+        p_r = perceptual_results[label_right][roi_name]['power']
+        times = motor_results[label_left][roi_name]['times'] * 1000
+        freqs = motor_results[label_left][roi_name]['freqs']
+
+        reg_diff    = m_l - p_l
+        ran_diff    = m_r - p_r
+        interaction = reg_diff - ran_diff
+
+        x_min, x_max = -500, 500
+        t_mask = (times >= x_min) & (times <= x_max)
+
+        combined  = np.concatenate([reg_diff[:, t_mask].ravel(), ran_diff[:, t_mask].ravel()])
+        vmax_cond = np.percentile(np.abs(combined), 95)
+        vmax_int  = np.percentile(np.abs(interaction[:, t_mask].ravel()), 95)
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+        def _panel(ax, power, title, vmin, vmax, xlabel=False):
+            levels = np.linspace(vmin, vmax, 20)
+            im = ax.contourf(times, freqs, power,
+                             levels=levels, cmap='RdBu_r',
+                             vmin=vmin, vmax=vmax, extend='both')
+            ax.axvline(0, color='black', linestyle='--', linewidth=1.5)
+            ax.set_title(title, fontsize=12, fontweight='bold')
+            ax.set_ylabel('Frequency (Hz)', fontsize=11)
+            if xlabel:
+                ax.set_xlabel('Time (ms)', fontsize=11)
+            ax.set_xlim([x_min, x_max])
+            ax.set_ylim([freqs[0], freqs[-1]])
+            return im
+
+        im1 = _panel(axes[0], reg_diff,
+                     f'{label_left} Motor \u2212 {label_left} Perceptual',
+                     -vmax_cond, vmax_cond)
+        plt.colorbar(im1, ax=axes[0], label='Power diff (dB)')
+
+        im2 = _panel(axes[1], ran_diff,
+                     f'{label_right} Motor \u2212 {label_right} Perceptual',
+                     -vmax_cond, vmax_cond)
+        plt.colorbar(im2, ax=axes[1], label='Power diff (dB)')
+
+        im3 = _panel(axes[2], interaction,
+                     f'Interaction\n({label_left} M\u2212P) \u2212 ({label_right} M\u2212P)',
+                     -vmax_int, vmax_int, xlabel=True)
+        plt.colorbar(im3, ax=axes[2], label='Power diff (dB)')
+
+        fig.suptitle(
+            f'{subject_id} | {lock_type.capitalize()}-locked | '
+            f'Motor vs Perceptual (AllBlocks) | {roi_name}',
+            fontsize=13, fontweight='bold'
+        )
+        plt.tight_layout()
+
+        filename = (
+            f'{subject_id}_{lock_type}_lock_testing_motor_vs_perceptual'
+            f'_{roi_name}_ersp_comparison.png'
+        )
+        output_path = os.path.join(output_dir, filename)
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"  \u2713 Motor vs Perceptual {roi_name} 比較圖已儲存: {output_path}")
+        plt.close(fig)

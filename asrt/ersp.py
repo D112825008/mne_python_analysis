@@ -13,7 +13,8 @@ from .ersp_plots import (
     plot_ersp_lum2023_style,
     plot_ersp_comparison,
     plot_learning_comparison,
-    plot_testing_comparison
+    plot_testing_comparison,
+    plot_motor_perceptual_comparison,
 )
 
 # 群體分析（可選）
@@ -95,7 +96,7 @@ def _compute_single_ersp(epochs_subset, available_groups, freqs, n_cycles,
             use_fft=True,
             return_itc=False,
             average=True,
-            n_jobs=-1
+            n_jobs=1
         )
         if baseline_method == 'whole_epoch':
             power.apply_baseline(mode='logratio', baseline=(None, None))
@@ -784,6 +785,74 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
                 plot_testing_comparison(
                     results[test_type], subject_id, lock_type, test_type, output_dir
                 )
+
+    # ── Pooled Testing Analysis（所有 block 合併）──────────────────
+    print(f"\n{'─'*60}")
+    print(f"  Testing 階段 Pooled 分析（所有 block 合併）")
+    print(f"{'─'*60}")
+
+    pooled_test_results = {}
+
+    for _test_type in ['motor', 'perceptual']:
+        _test_mask = epochs.metadata['test_type'].str.lower() == _test_type.lower()
+        _pooled_epochs = epochs[_test_mask]
+
+        if len(_pooled_epochs) == 0:
+            print(f"  \u26a0\ufe0f  {_test_type} AllBlocks: 沒有資料，跳過")
+            continue
+
+        print(f"\n  {'─'*50}")
+        print(f"  {_test_type.upper()} AllBlocks（{len(_pooled_epochs)} trials）")
+        print(f"  {'─'*50}")
+
+        _test_results_pooled = {}
+        _trial_types_p = sorted(_pooled_epochs.metadata['trial_type'].dropna().unique().tolist())
+
+        for _trial_type in _trial_types_p:
+            _mask = _pooled_epochs.metadata['trial_type'] == _trial_type
+            _epochs_subset = _pooled_epochs[_mask]
+
+            if len(_epochs_subset) == 0:
+                print(f"    \u26a0\ufe0f  {_trial_type}: 沒有資料")
+                continue
+
+            print(f"    {_trial_type}: {len(_epochs_subset)} trials")
+
+            _power_dict = asrt_ersp_analysis(
+                _epochs_subset,
+                subject_id=f"{subject_id}_{lock_type}_testing_{_test_type}_AllBlocks_{_trial_type}",
+                freqs=freqs,
+                n_cycles=n_cycles,
+                output_dir=output_dir,
+                do_td_baseline=do_td_baseline,
+                baseline_method=baseline_method,
+            )
+            _test_results_pooled[_trial_type] = _power_dict
+
+            if save_for_group and group_data_dir and lock_type == 'stimulus':
+                _pl = 'MotorTest' if _test_type == 'motor' else 'PerceptualTest'
+                _save_fullchannel_stimulus_h5(
+                    _epochs_subset, freqs, n_cycles, baseline_method,
+                    subject_id, _pl, 'AllBlocks', _trial_type,
+                    group_data_dir, baseline_window=baseline_window,
+                )
+
+        pooled_test_results[_test_type] = _test_results_pooled
+
+        if len(_test_results_pooled) >= 2:
+            plot_testing_comparison(
+                _test_results_pooled, subject_id, lock_type, _test_type, output_dir,
+                block_label='AllBlocks'
+            )
+
+    # Motor vs Perceptual diff
+    if (len(pooled_test_results.get('motor', {})) >= 2 and
+            len(pooled_test_results.get('perceptual', {})) >= 2):
+        plot_motor_perceptual_comparison(
+            pooled_test_results['motor'],
+            pooled_test_results['perceptual'],
+            subject_id, lock_type, output_dir
+        )
 
     return results
 
