@@ -94,13 +94,16 @@ def show_main_menu(has_raw=True, has_epochs=False, asrt_available=True):
         print("     → 不需要額外載入 Raw 資料")
         print("     → Baseline 從 Epoch metadata 的 Stimulus trigger 自動計算")
         print(" 17. ASRT 群體分析 (Group-level ERSP)")
-        print(" 18. ASRT ROI 頻譜分析")
-        print(" 19. ASRT Block 比較分析")
-        print(" 20. 輸出 RT 資料到 CSV（從 Response Epochs metadata）")
+        print(" 18. EEG–行為整合分析")
+        print("     → 輸入 PsychoPy CSV + .h5 目錄，三個方向的腦波-行為相關分析")
+        print("     → 不需要 Epochs 在記憶體中（需先完成選項 15 或 16）")
+        print(" 19. ASRT ROI 頻譜分析")
+        print(" 20. ASRT Block 比較分析")
+        print(" 21. 輸出 RT 資料到 CSV（從 Response Epochs metadata）")
 
     print("\n  0. 返回主選單")
 
-    choice = input("\n請輸入選項 (0-20): ").strip()
+    choice = input("\n請輸入選項 (0-21): ").strip()
     return choice
 
 

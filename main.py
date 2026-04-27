@@ -806,6 +806,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                                     print("可以用於後續分析：")
                                     print(f"  - {stim_fname} → 選項 15 (Stimulus ERSP)")
                                     print(f"  - {resp_fname} → 選項 16-17 (Response ERSP)")
+                                    print(f"  → 完成選項 15+16 後，可用選項 18 進行 EEG-行為整合分析")
                                     
                                     # 設定 current_epochs
                                     current_epochs = epochs_resp_clean
@@ -1186,7 +1187,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                 import traceback
                 traceback.print_exc()
         
-        elif choice == '18':
+        elif choice == '19':
             # ASRT ROI 頻譜分析
             try:
                 result = asrt_roi_spectral_analysis(current_epochs, subject_id)
@@ -1199,7 +1200,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                 import traceback
                 traceback.print_exc()
 
-        elif choice == '19':
+        elif choice == '20':
             # ASRT Block 比較分析
             try:
                 result = asrt_block_comparison(current_epochs, subject_id)
@@ -1342,7 +1343,665 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                 print(f"❌ 群體分析時發生錯誤: {str(e)}")
                 import traceback
                 traceback.print_exc()
-        
+
+        # ============================================================
+        # 選項 18: EEG-行為整合分析
+        # ============================================================
+        elif choice == '18':
+            try:
+                from collections import Counter as _Counter
+                import warnings as _warnings
+
+                print("\n" + "="*60)
+                print("EEG-行為整合分析（選項 18）")
+                print("="*60)
+                print("\n此功能直接從 PsychoPy 原始 CSV 提取行為資料，")
+                print("與已計算好的 ERSP .h5 檔案整合，執行三個方向的分析：")
+                print("  方向一：條件層次跨受試者相關（每人一點）")
+                print("  方向二：Block 組學習曲線（RT + ERSP 雙軸）")
+                print("  方向三：混合層次相關（可選 subject 或 subject×block）")
+
+                # ── Block 對應查找表（與 epochs.py 完全一致）──────────────────
+                _BLOCK_LOOKUP_18 = {
+                    ('learning', 'Block7-11'):   (0,  4),
+                    ('learning', 'Block12-16'):  (5,  9),
+                    ('learning', 'Block17-21'):  (10, 14),
+                    ('learning', 'Block22-26'):  (15, 19),
+                    ('testing',  'Block27-28'):  (0,  1),
+                    ('testing',  'Block29-30'):  (2,  3),
+                    ('testing',  'Block31-32'):  (4,  5),
+                    ('testing',  'Block33-34'):  (6,  7),
+                }
+
+                def _bid_to_group_18(block_type, bid):
+                    for (bt, grp), (lo, hi) in _BLOCK_LOOKUP_18.items():
+                        if bt == block_type and lo <= bid <= hi:
+                            return grp
+                    return None
+
+                # ── ROI 定義（與 pipeline 一致）──────────────────────────────
+                _ROI_GROUPS_18 = {
+                    'Motor':                ['Fz', 'FCz', 'Cz', 'C3', 'C4'],
+                    'Motor_Frontal':        ['Fz', 'FCz'],
+                    'Motor_Central':        ['Cz', 'C3', 'C4'],
+                    'Motor_Parietal':       ['P3', 'Pz', 'P4'],
+                    'Motor_Occipital':      ['O1', 'Oz', 'O2'],
+                    'Perceptual':           ['O1', 'Oz', 'O2', 'P3', 'Pz', 'P4'],
+                    'Perceptual_Parietal':  ['P3', 'Pz', 'P4'],
+                    'Perceptual_Occipital': ['O1', 'Oz', 'O2'],
+                    'Perceptual_Frontal':   ['Fz', 'FCz'],
+                    'Perceptual_Central':   ['Cz', 'C3', 'C4'],
+                }
+
+                # ────────────────────────────────────────────────────────────
+                # 內部函數：從 PsychoPy CSV 提取並處理行為資料
+                # 邏輯與 epochs.py create_asrt_epochs(trial_classification='triplet')
+                # 及 R 的 assign_freq() 完全一致
+                # ────────────────────────────────────────────────────────────
+                def _build_behavior_18(psy_df, sid_label, test_ver, rt_min=150., rt_max=800., z_thr=2.0):
+                    df = psy_df.copy()
+                    # 篩選有 orientation_index 的列
+                    if 'orientation_index' in df.columns:
+                        df = df[df['orientation_index'].notna()].copy()
+
+                    def _btype(row):
+                        def _ne(v):
+                            return pd.notna(v) and str(v).strip() not in ('', 'nan')
+                        if _ne(row.get('initial_random_seq_files', '')):  return 'random'
+                        if _ne(row.get('practice_seq_files', '')):        return 'practice'
+                        if _ne(row.get('learning_seq_files', '')):        return 'learning'
+                        if _ne(row.get('test_seq_files', '')):            return 'testing'
+                        return 'unknown'
+
+                    df['block_type'] = df.apply(_btype, axis=1)
+                    df = df[df['block_type'].isin(['learning', 'testing'])].copy()
+
+                    def _bid(row):
+                        if row['block_type'] == 'learning':
+                            v = row.get('learning_trials.thisTrialN', np.nan)
+                        else:
+                            v = row.get('combined_testing_trials.thisTrialN', np.nan)
+                        return int(float(v)) if pd.notna(v) else np.nan
+
+                    df['block_id'] = df.apply(_bid, axis=1)
+                    df = df[df['block_id'].notna()].copy()
+                    df['block_id'] = df['block_id'].astype(int)
+
+                    def _tib(row):
+                        if row['block_type'] == 'learning':
+                            v = row.get('learning_loop.thisTrialN', np.nan)
+                        else:
+                            for c in ['motor_percept_testing_loop.thisTrialN',
+                                      'percept_motor_testing_loop.thisTrialN']:
+                                if c in row.index and pd.notna(row.get(c)):
+                                    return float(row[c])
+                            v = np.nan
+                        return float(v) if pd.notna(v) else np.nan
+
+                    df['trial_in_block'] = df.apply(_tib, axis=1)
+                    df['rt_ms']   = pd.to_numeric(df.get('key_resp.rt',   np.nan), errors='coerce') * 1000.
+                    df['accuracy'] = pd.to_numeric(df.get('key_resp.corr', np.nan), errors='coerce')
+
+                    # trial_rank & position_type（仿 R: rank(trial)-6，奇偶判斷）
+                    df = df.sort_values(['block_type', 'block_id', 'trial_in_block'])
+                    df['trial_rank'] = df.groupby(['block_type', 'block_id']).cumcount() - 5
+                    df = df[df['trial_rank'] >= 0].copy()
+                    df['position_type'] = df['trial_rank'].apply(lambda r: 'regular' if r % 2 == 0 else 'random')
+
+                    # global block num & phase & test_type
+                    def _gblk(row):
+                        return row['block_id'] + 7 if row['block_type'] == 'learning' else row['block_id'] + 27
+                    df['block_global'] = df.apply(_gblk, axis=1)
+                    df['phase'] = df['block_global'].apply(lambda g: 'Learning' if g <= 26 else 'Test')
+                    def _tt(g):
+                        if g < 27 or g > 34: return None
+                        if test_ver == 'motor_first':
+                            return 'motor' if g in [27,28,33,34] else 'perceptual'
+                        return 'perceptual' if g in [27,28,33,34] else 'motor'
+                    df['test_type'] = df['block_global'].apply(_tt)
+
+                    # Triplet 建立
+                    def _triplets(seq):
+                        r = [None, None]
+                        for i in range(2, len(seq)):
+                            n2,n1,n = seq[i-2],seq[i-1],seq[i]
+                            if str(n2)==str(n1)==str(n) or str(n2)==str(n):
+                                r.append(None)
+                            else:
+                                r.append(f"{n2}{n1}{n}")
+                        return r
+
+                    trip_map = {}
+                    for (bt, bid), grp in df.groupby(['block_type', 'block_id']):
+                        gs = grp.sort_values('trial_in_block')
+                        if 'correct_answer_index' not in gs.columns:
+                            continue
+                        seq = gs['correct_answer_index'].astype(float).fillna(0).astype(int).tolist()
+                        for idx, tri in zip(gs.index, _triplets(seq)):
+                            trip_map[idx] = tri
+                    df['triplet'] = df.index.map(lambda i: trip_map.get(i))
+
+                    # Frequency category（仿 epochs.py _assign_types()）
+                    lrm = (df['phase']=='Learning') & (df['position_type']=='random') & df['triplet'].notna()
+                    rc = _Counter(df.loc[lrm,'triplet'].tolist())
+                    med_c = np.median(list(rc.values())) if rc else 0
+                    print(f"  [{sid_label}] triplet 種類: {len(rc)}, median count: {med_c:.1f}")
+
+                    def _fcat(row):
+                        if row['position_type'] == 'regular': return 'high'
+                        if row['position_type'] == 'random':
+                            if pd.isna(row['triplet']): return None
+                            return 'high' if rc.get(row['triplet'], 0) >= med_c else 'low'
+                        return None
+
+                    df['frequency_category'] = df.apply(_fcat, axis=1)
+                    df = df[df['frequency_category'].notna()].copy()
+                    df['trial_type'] = df['frequency_category']
+
+                    # eeg_block_group
+                    df['eeg_block_group'] = df.apply(
+                        lambda r: _bid_to_group_18(r['block_type'], r['block_id']), axis=1)
+                    df = df[df['eeg_block_group'].notna()].copy()
+
+                    # RT 過濾（仿 R assign_freq()：150-800ms, |z|≤2 within block×trial_type）
+                    n0 = len(df)
+                    df = df[df['rt_ms'].between(rt_min, rt_max)].copy()
+                    gcols = ['block_type', 'block_id', 'trial_type']
+                    df['rt_z'] = df.groupby(gcols)['rt_ms'].transform(
+                        lambda x: (x - x.mean()) / x.std() if x.std() > 0 else 0.)
+                    df = df[df['rt_z'].abs() <= z_thr].drop(columns=['rt_z'])
+                    print(f"  [{sid_label}] RT 過濾: {n0} → {len(df)} trials")
+
+                    df['sid'] = sid_label
+                    df['triplet_median_count'] = med_c   # 記錄供驗證用
+                    return df, med_c
+
+                # ────────────────────────────────────────────────────────────
+                # 內部函數：聚合行為資料（block_group 層次）
+                # ────────────────────────────────────────────────────────────
+                def _agg_behavior_18(bdf, use_med=True):
+                    fn = 'median' if use_med else 'mean'
+                    bdf = bdf.copy()
+                    bdf['test_type'] = bdf['test_type'].fillna('none')
+                    grp = ['sid','block_type','eeg_block_group','phase','test_type',
+                           'trial_type','frequency_category']
+                    return (bdf.groupby(grp)['rt_ms']
+                               .agg([fn, 'count'])
+                               .rename(columns={fn:'rt','count':'n_trials'})
+                               .reset_index())
+
+                # ────────────────────────────────────────────────────────────
+                # 內部函數：讀取 ERSP .h5
+                # ────────────────────────────────────────────────────────────
+                def _load_ersp_18(h5_dir_path, sids, ltype):
+                    prefix = 'Response' if ltype == 'response' else 'Stimulus'
+                    freq_r = (4., 8.)   if ltype == 'response' else (8., 13.)
+                    time_r = (-.300, .050) if ltype == 'response' else (.100, .300)
+                    rows = []
+                    for fp in sorted(Path(h5_dir_path).glob(f'*_{prefix}_*.h5')):
+                        stem = fp.stem.replace('_ERSP', '')
+                        parts = stem.split('_')
+                        try:
+                            trial_type  = parts[-1].lower()
+                            block_group = parts[-2]
+                            phase       = parts[-3]
+                            sid18       = '_'.join(parts[:-4])
+                            if parts[-4] != prefix or sid18 not in sids:
+                                continue
+                        except IndexError:
+                            continue
+                        try:
+                            with _warnings.catch_warnings():
+                                _warnings.simplefilter('ignore')
+                                tl = mne.time_frequency.read_tfrs(str(fp))
+                            tfr = tl[0] if isinstance(tl, list) else tl
+                        except Exception as _e:
+                            print(f"  ⚠ 讀取失敗 {fp.name}: {_e}")
+                            continue
+                        freqs18, times18 = tfr.freqs, tfr.times
+                        fm = (freqs18 >= freq_r[0]) & (freqs18 <= freq_r[1])
+                        tm = (times18 >= time_r[0]) & (times18 <= time_r[1])
+                        cnu = [ch.upper() for ch in tfr.ch_names]
+                        for rname, rchs in _ROI_GROUPS_18.items():
+                            ridx = [cnu.index(c.upper()) for c in rchs if c.upper() in cnu]
+                            if not ridx: continue
+                            val = tfr.data[ridx].mean(axis=0)[np.ix_(fm,tm)].mean()
+                            rows.append({'sid':sid18,'lock_type':ltype,'phase':phase,
+                                         'eeg_block_group':block_group,'trial_type':trial_type,
+                                         'roi':rname,'ersp_mean':float(val)})
+                    df18 = pd.DataFrame(rows)
+                    print(f"  ✓ ERSP: {len(df18)} rows, {df18['sid'].nunique() if len(df18) else 0} 受試者")
+                    return df18
+
+                # ────────────────────────────────────────────────────────────
+                # 內部函數：Join
+                # ────────────────────────────────────────────────────────────
+                def _join_18(ersp_df, beh_sum):
+                    def _p2bt(p): return 'learning' if p=='Learning' else 'testing'
+                    def _p2tt(p):
+                        if p=='MotorTest': return 'motor'
+                        if p=='PerceptualTest': return 'perceptual'
+                        return 'none'
+                    e = ersp_df.copy()
+                    e['block_type'] = e['phase'].map(_p2bt)
+                    e['tasktype']   = e['phase'].map(_p2tt)
+                    b = beh_sum.copy()
+                    b['tasktype'] = b['test_type']
+                    # phase 欄位在兩邊都存在會造成衝突，先從行為資料側移除
+                    b = b.drop(columns=[c for c in ['phase', 'block_type'] if c in b.columns])
+                    joined = e.merge(b, on=['sid','eeg_block_group','trial_type','tasktype'],
+                                     how='inner')
+                    # 確保 phase 欄位存在（來自 EEG 側）
+                    if 'phase' not in joined.columns and 'phase_eeg' in joined.columns:
+                        joined['phase'] = joined['phase_eeg']
+                    print(f"  ✓ Join: {len(joined)} rows, {joined['sid'].nunique()} 受試者")
+                    print(f"  欄位: {list(joined.columns)}")
+                    return joined
+
+                # ────────────────────────────────────────────────────────────
+                # 內部函數：方向一繪圖（跨受試者相關）
+                # ────────────────────────────────────────────────────────────
+                def _plot_dir1_18(joined, roi, phase, method, out_path):
+                    from scipy import stats as _stats
+                    d = joined[(joined['roi']==roi) & (joined['phase']==phase)].copy()
+                    recs = []
+                    for sid18, g in d.groupby('sid'):
+                        rt_h  = g[g['trial_type']=='high']['rt'].mean()
+                        rt_l  = g[g['trial_type']=='low']['rt'].mean()
+                        erp_h = g[g['trial_type']=='high']['ersp_mean'].mean()
+                        erp_l = g[g['trial_type']=='low']['ersp_mean'].mean()
+                        recs.append({'sid':sid18,'x':rt_h-rt_l,'y':erp_h-erp_l})
+                    pdf = pd.DataFrame(recs).dropna(subset=['x','y'])
+                    if len(pdf) < 3:
+                        print(f"  ⚠ 受試者不足（n={len(pdf)}），跳過方向一: {roi} × {phase}")
+                        return None, {}
+                    x, y = pdf['x'].values, pdf['y'].values
+                    r_val, p_val = (_stats.spearmanr(x,y) if method=='spearman'
+                                    else _stats.pearsonr(x,y))
+                    fig, ax = plt.subplots(figsize=(7,6))
+                    ax.scatter(x, y, s=80, color='#2196F3', zorder=5)
+                    for _, row18 in pdf.iterrows():
+                        ax.annotate(row18['sid'], (row18['x'],row18['y']),
+                                    fontsize=8, color='gray',
+                                    xytext=(5,5), textcoords='offset points')
+                    if len(pdf) >= 3:
+                        m18,b18 = np.polyfit(x,y,1)
+                        xl18 = np.linspace(x.min(),x.max(),100)
+                        ax.plot(xl18, m18*xl18+b18, color='#FF5722', lw=1.5, alpha=.7)
+                    ax.axhline(0, color='gray', ls='--', lw=.8)
+                    ax.axvline(0, color='gray', ls='--', lw=.8)
+                    ax.text(.97,.97,
+                            f'{method.capitalize()} r={r_val:.3f}\np={p_val:.3f}\nn={len(pdf)}',
+                            transform=ax.transAxes, ha='right', va='top', fontsize=10,
+                            bbox=dict(boxstyle='round', fc='white', alpha=.8))
+                    ax.set_xlabel('RT Effect: High - Low (ms)', fontsize=11)
+                    ax.set_ylabel('ERSP Effect: High - Low (dB)', fontsize=11)
+                    ax.set_title(f'EEG-行為相關 | {roi} | {phase}',
+                                 fontsize=12, fontweight='bold')
+                    plt.tight_layout()
+                    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+                    plt.close(fig)
+                    print(f"  ✓ 方向一圖: {os.path.basename(out_path)}")
+                    return fig, {'r':r_val,'p':p_val,'n':len(pdf)}
+
+                # ────────────────────────────────────────────────────────────
+                # 內部函數：方向二繪圖（學習曲線雙軸）
+                # ────────────────────────────────────────────────────────────
+                def _plot_dir2_18(joined, roi, phase, group_level, out_path):
+                    _BLK_ORD = ['Block7-11','Block12-16','Block17-21','Block22-26',
+                                'Block27-28','Block29-30','Block31-32','Block33-34']
+                    d = joined[(joined['roi']==roi) & (joined['phase']==phase)].copy()
+                    curve = d.groupby(['sid','eeg_block_group','trial_type']).agg(
+                        rt_med=('rt','median'), ersp_avg=('ersp_mean','mean')
+                    ).reset_index()
+                    if group_level and curve['sid'].nunique() > 1:
+                        curve = curve.groupby(['eeg_block_group','trial_type']).agg(
+                            rt_se=('rt_med', lambda x: x.std()/np.sqrt(len(x))),
+                            ersp_se=('ersp_avg', lambda x: x.std()/np.sqrt(len(x))),
+                            rt_med=('rt_med','mean'), ersp_avg=('ersp_avg','mean'),
+                            n_sub=('rt_med','count')
+                        ).reset_index()
+                        title_s = f'Group (N={int(curve["n_sub"].max())})'
+                    else:
+                        title_s = ', '.join(d['sid'].unique())
+                    pblks = [b for b in _BLK_ORD if b in curve['eeg_block_group'].values]
+                    curve['bord'] = curve['eeg_block_group'].map({b:i for i,b in enumerate(pblks)})
+                    curve = curve.sort_values('bord')
+                    colors18 = {'high':'#E74C3C','low':'#3498DB'}
+                    fig2, ax1 = plt.subplots(figsize=(10,5))
+                    ax2 = ax1.twinx()
+                    for tt18, g18 in curve.groupby('trial_type'):
+                        c18 = colors18.get(tt18,'gray')
+                        ax1.plot(g18['bord'], g18['rt_med'], color=c18,
+                                 marker='o', lw=1.8, label=f'RT {tt18}')
+                        ax2.plot(g18['bord'], g18['ersp_avg'], color=c18,
+                                 marker='^', lw=1.8, ls='--', label=f'ERSP {tt18}')
+                    ax1.set_xticks(range(len(pblks)))
+                    ax1.set_xticklabels(pblks, rotation=30, ha='right')
+                    ax1.set_xlabel('Block Group', fontsize=11)
+                    ax1.set_ylabel('RT (ms)', fontsize=11)
+                    ax2.set_ylabel('ERSP (dB)', fontsize=11)
+                    ax1.set_title(f'學習曲線 | {roi} | {phase} | {title_s}',
+                                  fontsize=12, fontweight='bold')
+                    l1,lb1 = ax1.get_legend_handles_labels()
+                    l2,lb2 = ax2.get_legend_handles_labels()
+                    ax1.legend(l1+l2, lb1+lb2, loc='upper right', fontsize=9)
+                    plt.tight_layout()
+                    fig2.savefig(out_path, dpi=200, bbox_inches='tight')
+                    plt.close(fig2)
+                    print(f"  ✓ 方向二圖: {os.path.basename(out_path)}")
+
+                # ────────────────────────────────────────────────────────────
+                # 內部函數：方向三繪圖（混合層次相關）
+                # ────────────────────────────────────────────────────────────
+                def _plot_dir3_18(joined, roi, phase, level, method, out_path):
+                    from scipy import stats as _stats
+                    d = joined[(joined['roi']==roi) & (joined['phase']==phase)].copy()
+                    grp_cols = ['sid'] if level=='subject' else ['sid','eeg_block_group']
+                    recs = []
+                    for keys18, g18 in d.groupby(grp_cols):
+                        sid18 = keys18 if isinstance(keys18,str) else keys18[0]
+                        blk18 = None if level=='subject' else keys18[1]
+                        rt_h  = g18[g18['trial_type']=='high']['rt'].mean()
+                        rt_l  = g18[g18['trial_type']=='low']['rt'].mean()
+                        ep_h  = g18[g18['trial_type']=='high']['ersp_mean'].mean()
+                        ep_l  = g18[g18['trial_type']=='low']['ersp_mean'].mean()
+                        recs.append({'sid':sid18,'block':blk18,'x':rt_h-rt_l,'y':ep_h-ep_l})
+                    pdf3 = pd.DataFrame(recs).dropna(subset=['x','y'])
+                    if len(pdf3) < 3:
+                        print(f"  ⚠ 資料點不足（n={len(pdf3)}），跳過方向三: {roi} × {phase}")
+                        return None, {}
+                    x3,y3 = pdf3['x'].values, pdf3['y'].values
+                    r3,p3 = (_stats.spearmanr(x3,y3) if method=='spearman'
+                             else _stats.pearsonr(x3,y3))
+                    cmap18 = plt.cm.get_cmap('tab10', pdf3['sid'].nunique())
+                    sc18 = {s:cmap18(i) for i,s in enumerate(pdf3['sid'].unique())}
+                    fig3, ax3 = plt.subplots(figsize=(7,6))
+                    for _, r18 in pdf3.iterrows():
+                        ax3.scatter(r18['x'], r18['y'], color=sc18[r18['sid']], s=70, zorder=5)
+                        lbl3 = r18['sid'] if level=='subject' else f"{r18['sid']}\n{r18['block']}"
+                        ax3.annotate(lbl3,(r18['x'],r18['y']), fontsize=7, color='gray',
+                                     xytext=(4,4), textcoords='offset points')
+                    if len(pdf3) >= 3:
+                        m3,b3 = np.polyfit(x3,y3,1)
+                        xl3 = np.linspace(x3.min(),x3.max(),100)
+                        ax3.plot(xl3, m3*xl3+b3, color='gray', lw=1.5, alpha=.6)
+                    ax3.axhline(0, color='gray', ls='--', lw=.8)
+                    ax3.axvline(0, color='gray', ls='--', lw=.8)
+                    ax3.text(.97,.97,
+                             f'{method.capitalize()} r={r3:.3f}\np={p3:.3f}\nn={len(pdf3)}',
+                             transform=ax3.transAxes, ha='right', va='top', fontsize=10,
+                             bbox=dict(boxstyle='round', fc='white', alpha=.8))
+                    ll3 = '每人一點' if level=='subject' else '每人×每Block Group一點'
+                    ax3.set_xlabel('RT Effect: High - Low (ms)', fontsize=11)
+                    ax3.set_ylabel('ERSP Effect: High - Low (dB)', fontsize=11)
+                    ax3.set_title(f'EEG-行為相關 [{ll3}] | {roi} | {phase}',
+                                  fontsize=11, fontweight='bold')
+                    plt.tight_layout()
+                    fig3.savefig(out_path, dpi=200, bbox_inches='tight')
+                    plt.close(fig3)
+                    print(f"  ✓ 方向三圖: {os.path.basename(out_path)}")
+                    return fig3, {'r':r3,'p':p3,'n':len(pdf3)}
+
+                # ════════════════════════════════════════════════════════════
+                # 主流程：使用者輸入
+                # ════════════════════════════════════════════════════════════
+
+                # ── Step 1: 受試者 CSV 路徑 ──────────────────────────────────
+                print("\n" + "─"*60)
+                print("Step 1：輸入受試者資訊")
+                print("─"*60)
+                print("（每次輸入一位，留空 Enter 結束輸入）")
+                print("  test_version 說明：")
+                print("    motor_first    → Testing block 27,28,33,34 = motor")
+                print("    perceptual_first → Testing block 27,28,33,34 = perceptual")
+
+                # 改成 {sid: {'path': ..., 'test_version': ...}} 支援每人獨立設定
+                psychopy_csv_paths_18 = {}
+                while True:
+                    sid18_input = input("\n  受試者 ID（Enter 結束）: ").strip()
+                    if not sid18_input:
+                        if not psychopy_csv_paths_18:
+                            print("  ⚠ 至少需要輸入一位受試者")
+                            continue
+                        break
+                    csv18_path = input(f"  {sid18_input} 的 PsychoPy CSV 路徑: ").strip().strip('"')
+                    if not os.path.exists(csv18_path):
+                        print(f"  ⚠ 找不到檔案: {csv18_path}")
+                        continue
+                    print(f"  {sid18_input} 的 Testing block 版本:")
+                    print(f"    1. motor_first（27,28,33,34=motor; 29-32=perceptual）")
+                    print(f"    2. perceptual_first（27,28,33,34=perceptual; 29-32=motor）")
+                    tv18 = input(f"  請選擇 (1/2) [1]: ").strip() or '1'
+                    test_ver18 = 'motor_first' if tv18 != '2' else 'perceptual_first'
+                    psychopy_csv_paths_18[sid18_input] = {
+                        'path': csv18_path,
+                        'test_version': test_ver18
+                    }
+                    print(f"  ✓ 已加入 {sid18_input}（{test_ver18}）")
+
+                subject_ids_18 = list(psychopy_csv_paths_18.keys())
+                print(f"\n  受試者設定：")
+                for _s, _info in psychopy_csv_paths_18.items():
+                    print(f"    {_s}: {_info['test_version']}")
+
+                # ── Step 2: 分析設定 ─────────────────────────────────────────
+                print("\n" + "─"*60)
+                print("Step 2：分析設定")
+                print("─"*60)
+
+                # H5 目錄
+                _default_h5 = r'C:\Experiment\Result\h5'
+                h5_dir_18 = input(f"  ERSP .h5 檔案目錄 [{_default_h5}]: ").strip().strip('"') or _default_h5
+
+                # 輸出目錄
+                _default_out = r'C:\Experiment\Result\eeg_behavior'
+                out_dir_18 = input(f"  輸出目錄 [{_default_out}]: ").strip().strip('"') or _default_out
+
+                # Lock type
+                print("\n  Lock type:")
+                print("    1. response（預設）")
+                print("    2. stimulus")
+                ltype_choice = input("  請選擇 (1/2) [1]: ").strip() or '1'
+                lock_type_18 = 'response' if ltype_choice != '2' else 'stimulus'
+
+                # 相關方法
+                print("\n  相關分析方法:")
+                print("    1. spearman（預設）")
+                print("    2. pearson")
+                cm_choice = input("  請選擇 (1/2) [1]: ").strip() or '1'
+                corr_method_18 = 'spearman' if cm_choice != '2' else 'pearson'
+
+                # 方向三層次
+                print("\n  方向三分析層次:")
+                print("    1. subject（每人一點，預設）")
+                print("    2. block（每人×每 Block Group 一點）")
+                d3_choice = input("  請選擇 (1/2) [1]: ").strip() or '1'
+                dir3_level_18 = 'subject' if d3_choice != '2' else 'block'
+
+                # 方向二：群體平均？
+                gl_choice = input("\n  方向二是否顯示群體平均（y=群體, n=個別受試者）[y]: ").strip().lower() or 'y'
+                group_level_18 = (gl_choice == 'y')
+
+                # ROI 篩選
+                print("\n  ROI 選擇（留空 Enter = 全部 10 個 ROI）:")
+                roi_input_18 = input("  （逗號分隔，例如: Motor,Perceptual）: ").strip()
+                if roi_input_18:
+                    rois_18 = [r.strip() for r in roi_input_18.split(',') if r.strip() in _ROI_GROUPS_18]
+                    if not rois_18:
+                        rois_18 = list(_ROI_GROUPS_18.keys())
+                        print("  ⚠ 無效的 ROI 名稱，改用全部 ROI")
+                else:
+                    rois_18 = list(_ROI_GROUPS_18.keys())
+
+                phases_18 = ['Learning', 'MotorTest', 'PerceptualTest']
+
+                print(f"\n  ✓ 設定確認")
+                print(f"    Lock type:  {lock_type_18}")
+                print(f"    相關方法:   {corr_method_18}")
+                print(f"    方向三層次: {dir3_level_18}")
+                print(f"    ROI 數量:   {len(rois_18)}")
+                print(f"    受試者 test_version：")
+                for _s, _info in psychopy_csv_paths_18.items():
+                    print(f"      {_s}: {_info['test_version']}")
+                confirm_18 = input("\n  確定執行？(y/n) [y]: ").strip().lower() or 'y'
+                if confirm_18 != 'y':
+                    print("  取消")
+                    continue
+
+                # ── Step 3: 行為資料 ─────────────────────────────────────────
+                print("\n" + "─"*60)
+                print("Step 3：讀取並處理行為資料")
+                print("─"*60)
+
+                all_beh_18 = []
+                _verif_dir_18 = os.path.join(out_dir_18, 'verification')
+                os.makedirs(_verif_dir_18, exist_ok=True)
+
+                for sid18, cpath18 in psychopy_csv_paths_18.items():
+                    print(f"\n  處理 {sid18}...")
+                    try:
+                        # 取出這位受試者的 CSV 路徑和 test_version
+                        _info18    = cpath18 if isinstance(cpath18, dict) else {'path': cpath18, 'test_version': 'motor_first'}
+                        _csv18     = _info18['path']
+                        _tv18      = _info18['test_version']
+                        print(f"    test_version: {_tv18}")
+                        psy18 = pd.read_csv(_csv18)
+                        beh18, med_c_18 = _build_behavior_18(psy18, sid18, _tv18)
+                        all_beh_18.append(beh18)
+
+                        # ── 輸出驗證 CSV（Python 側）──────────────────────────
+                        # Learning 行的 test_type = None，需先填為 'none'
+                        # 否則 groupby 預設 dropna=True 會丟棄所有 Learning 行
+                        _verif_grp = (
+                            beh18
+                            .assign(test_type=lambda x: x['test_type'].fillna('none'))
+                            .groupby(['sid', 'block_type', 'eeg_block_group',
+                                      'phase', 'test_type',
+                                      'position_type', 'frequency_category'])
+                            .agg(
+                                n_trials   = ('rt_ms', 'count'),
+                                median_rt  = ('rt_ms', 'median'),
+                                mean_rt    = ('rt_ms', 'mean'),
+                            )
+                            .reset_index()
+                        )
+                        _verif_grp['triplet_median_count'] = med_c_18
+                        _verif_grp['source'] = 'python'
+
+                        _verif_path = os.path.join(
+                            _verif_dir_18, f'{sid18}_verification_python.csv')
+                        _verif_grp.to_csv(_verif_path, index=False)
+                        print(f"  ✓ 驗證 CSV (Python): {_verif_path}")
+
+                    except Exception as _e18:
+                        print(f"  ✗ {sid18} 失敗: {_e18}")
+                        import traceback; traceback.print_exc()
+
+                if not all_beh_18:
+                    print("  ✗ 所有受試者行為資料處理失敗，取消")
+                    continue
+
+                beh_all_18 = pd.concat(all_beh_18, ignore_index=True)
+                beh_sum_18 = _agg_behavior_18(beh_all_18, use_med=True)
+
+                # ── Step 4: ERSP 資料 ────────────────────────────────────────
+                print("\n" + "─"*60)
+                print("Step 4：讀取 ERSP 資料")
+                print("─"*60)
+
+                ersp_18 = _load_ersp_18(h5_dir_18, subject_ids_18, lock_type_18)
+                if len(ersp_18) == 0:
+                    print(f"  ✗ 找不到任何 {lock_type_18} ERSP .h5，請先執行選項 15 或 16")
+                    continue
+
+                # ── Step 5: Join ─────────────────────────────────────────────
+                print("\n" + "─"*60)
+                print("Step 5：Join EEG 與行為資料")
+                print("─"*60)
+
+                joined_18 = _join_18(ersp_18, beh_sum_18)
+                if len(joined_18) == 0:
+                    print("  ✗ Join 結果為空，請確認受試者 ID 和 block_group 是否一致")
+                    continue
+
+                # 儲存 joined CSV
+                os.makedirs(out_dir_18, exist_ok=True)
+                joined_csv_18 = os.path.join(out_dir_18, f'joined_eeg_behavior_{lock_type_18}.csv')
+                joined_18.to_csv(joined_csv_18, index=False)
+                print(f"  ✓ Joined data 儲存: {joined_csv_18}")
+
+                # ── Step 6: 三個方向的分析 ──────────────────────────────────
+                print("\n" + "─"*60)
+                print("Step 6：執行三個方向的分析")
+                print("─"*60)
+
+                dir1_out = os.path.join(out_dir_18, 'direction1_correlation')
+                dir2_out = os.path.join(out_dir_18, 'direction2_learning_curve')
+                dir3_out = os.path.join(out_dir_18, 'direction3_multilevel')
+                for _d18 in [dir1_out, dir2_out, dir3_out]:
+                    os.makedirs(_d18, exist_ok=True)
+
+                corr_rows_18 = []
+                plt.ioff()
+
+                for roi18 in rois_18:
+                    for phase18 in phases_18:
+                        sub18 = joined_18[(joined_18['roi']==roi18) & (joined_18['phase']==phase18)]
+                        if len(sub18) == 0:
+                            continue
+                        tag18 = f'{roi18}_{phase18}_{lock_type_18}'
+
+                        # 方向一
+                        _, c1 = _plot_dir1_18(joined_18, roi18, phase18, corr_method_18,
+                                              os.path.join(dir1_out, f'dir1_{tag18}.png'))
+                        if c1:
+                            corr_rows_18.append({'dir':1,'roi':roi18,'phase':phase18,
+                                                 'lock_type':lock_type_18, **c1})
+
+                        # 方向二
+                        _plot_dir2_18(joined_18, roi18, phase18, group_level_18,
+                                      os.path.join(dir2_out,
+                                                   f'dir2_{"group" if group_level_18 else "individual"}_{tag18}.png'))
+
+                        # 方向三
+                        _, c3 = _plot_dir3_18(joined_18, roi18, phase18, dir3_level_18,
+                                              corr_method_18,
+                                              os.path.join(dir3_out, f'dir3_{dir3_level_18}_{tag18}.png'))
+                        if c3:
+                            corr_rows_18.append({'dir':3,'roi':roi18,'phase':phase18,
+                                                 'lock_type':lock_type_18,
+                                                 'level':dir3_level_18, **c3})
+
+                plt.ion()
+
+                # ── Step 7: 輸出摘要 CSV ─────────────────────────────────────
+                if corr_rows_18:
+                    corr_df_18 = pd.DataFrame(corr_rows_18)
+                    corr_out_18 = os.path.join(out_dir_18,
+                                               f'correlation_summary_{lock_type_18}.csv')
+                    corr_df_18.to_csv(corr_out_18, index=False)
+                    print(f"\n  ✓ 相關摘要 CSV: {corr_out_18}")
+                    print(f"\n{'─'*60}")
+                    print("相關分析摘要（p < .05 標記 *）")
+                    print(f"{'─'*60}")
+                    for _, rw in corr_df_18.iterrows():
+                        sig = ' *' if rw['p'] < .05 else ''
+                        phase_lbl = rw.get('phase','')
+                        print(f"  Dir{int(rw['dir'])} | {rw['roi']:25s} | {phase_lbl:15s} | "
+                              f"r={rw['r']:+.3f}  p={rw['p']:.3f}{sig}")
+
+                print(f"\n{'='*60}")
+                print("✓ EEG-行為整合分析完成")
+                print(f"  輸出目錄: {out_dir_18}")
+                print(f"{'='*60}")
+                processing_history.append(f"EEG-行為整合分析（{len(subject_ids_18)} 位受試者，{lock_type_18}）")
+
+            except Exception as e:
+                print(f"\n✗ EEG-行為整合分析時發生錯誤: {str(e)}")
+                import traceback
+                traceback.print_exc()
+
         elif choice == '16':
             # Response ERSP 分析（per-trial logratio baseline）
 
@@ -1568,7 +2227,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                 import traceback
                 traceback.print_exc()
         
-        elif choice == '20':
+        elif choice == '21':
             # 輸出 RT 資料到 CSV
             print("\n" + "="*60)
             print("輸出 RT 資料到 CSV")

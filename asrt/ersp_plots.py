@@ -1,3 +1,5 @@
+import matplotlib
+matplotlib.rcParams["axes.unicode_minus"] = False
 import numpy as np
 import matplotlib.pyplot as plt
 import mne
