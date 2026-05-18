@@ -4,6 +4,7 @@
 包含EEG數據預處理相關功能。
 版本: 3.0 - 修正前處理流程順序，符合標準 EEG 處理規範
 """
+import os
 import numpy as np
 import mne
 from mne_python_analysis.signal_processing import (
@@ -13,13 +14,67 @@ from mne_python_analysis.signal_processing import (
 )
 
 
-def interactive_marking_bad_segments(raw):
+# 預設儲存目錄（可被 load_bad_marking 讀取）
+_BAD_MARKING_DIR = r'C:\Experiment\Result\bad_marking'
+
+
+def _bad_marking_path(subject_id):
+    """回傳指定受試者的標記 JSON 路徑"""
+    return os.path.join(_BAD_MARKING_DIR, f'{subject_id}_bad_marking.json')
+
+
+def load_bad_marking(raw, subject_id):
+    """
+    從 JSON 載入先前儲存的壞通道與 BAD 片段標記，套用到 raw 物件。
+
+    參數:
+        raw (mne.io.Raw): 要套用標記的 Raw 物件
+        subject_id (str): 受試者 ID
+    返回:
+        mne.io.Raw: 套用標記後的 Raw 物件
+        bool: 是否成功載入
+    """
+    import json
+    _path = _bad_marking_path(subject_id)
+    if not os.path.exists(_path):
+        print(f"  ⚠ 找不到標記檔案: {_path}")
+        return raw, False
+
+    with open(_path, 'r', encoding='utf-8') as _f:
+        data = json.load(_f)
+
+    # 套用壞通道
+    bads = data.get('bad_channels', [])
+    if bads:
+        raw.info['bads'] = list(set(raw.info['bads'] + bads))
+        print(f"  ✓ 載入壞通道: {bads}")
+
+    # 套用 annotations
+    anns = data.get('annotations', [])
+    if anns:
+        import mne
+        new_anns = mne.Annotations(
+            onset=[a['onset'] for a in anns],
+            duration=[a['duration'] for a in anns],
+            description=[a['description'] for a in anns]
+        )
+        raw.set_annotations(raw.annotations + new_anns)
+        n_bad = sum(1 for a in anns if a['description'].startswith('BAD'))
+        print(f"  ✓ 載入 BAD 片段: {n_bad} 個")
+
+    print(f"  ✓ 標記載入完成: {_path}")
+    return raw, True
+
+
+def interactive_marking_bad_segments(raw, subject_id=None):
     """
     互動式標記壞段落（類似EEGLAB的手動artifact標記功能）。
-    
+    關閉視窗後自動儲存壞通道與 BAD 片段到 JSON 檔案。
+
     參數:
         raw (mne.io.Raw): 要標記的Raw物件
-    
+        subject_id (str): 受試者ID，用於儲存標記結果
+
     返回:
         mne.io.Raw: 標記後的Raw物件
     """
@@ -27,55 +82,65 @@ def interactive_marking_bad_segments(raw):
     print("互動式標記壞段落 (Interactive Bad Segment Marking)")
     print("="*60)
     print("\n使用說明：")
-    print("1. 滑鼠左鍵拖曳選擇時間區間")
-    print("2. 按 'a' 鍵新增標記")
-    print("3. 輸入描述（建議用 'BAD_' 開頭，如 'BAD_artifact'）")
-    print("4. 點擊通道名稱可標記壞通道")
-    print("5. 按 '?' 查看所有快捷鍵")
-    print("6. 關閉視窗完成標記")
+    print("1. 滑鼠左鍵拖曳選擇時間區間（在波形上直接拖曳）")
+    print("2. 點擊通道名稱可標記壞通道（變紅色）")
+    print("3. 關閉視窗完成標記（標記會自動儲存）")
     print("\n快捷鍵提示：")
     print("  ← → : 向左/右移動")
     print("  ↑ ↓ : 增加/減少顯示通道數")
     print("  + - : 放大/縮小振幅")
-    print("  a   : 新增標記")
+    print("  a   : 新增文字標記")
     print("="*60 + "\n")
-    
+
     input("按 Enter 開啟互動視窗...")
-    
+
     # 開啟互動式標記視窗
     try:
         fig = raw.plot(
             scalings='auto',
             n_channels=30,
             block=True,
-            title='互動式標記壞段落 - 拖曳選擇後按 a 鍵標記'
+            title='互動式標記壞段落 - 拖曳選擇壞片段，點擊通道名稱標記壞通道'
         )
     except Exception as e:
         print(f"開啟互動視窗時發生錯誤: {str(e)}")
         return raw
-    
-    # 檢查是否有新增標記
-    if len(raw.annotations) > 0:
-        print(f"\n已標記 {len(raw.annotations)} 個區段：")
-        for i, ann in enumerate(raw.annotations):
-            print(f"  {i+1}. {ann['description']}: {ann['onset']:.2f}s - "
-                  f"{ann['onset'] + ann['duration']:.2f}s "
-                  f"({ann['duration']:.2f}s)")
-        
-        # 統計 BAD 標記
-        bad_annotations = [ann for ann in raw.annotations 
-                          if ann['description'].startswith('BAD')]
+
+    # 統計結果
+    bad_annotations = [ann for ann in raw.annotations
+                       if ann['description'].startswith('BAD')]
+    if raw.info['bads'] or bad_annotations:
+        if raw.info['bads']:
+            print(f"\n  壞通道: {raw.info['bads']}")
         if bad_annotations:
-            total_bad_duration = sum([ann['duration'] for ann in bad_annotations])
-            print(f"\n總共標記了 {len(bad_annotations)} 個壞段落")
-            print(f"壞段落總時長: {total_bad_duration:.2f} 秒")
-            
-            # 顯示壞段落比例
+            total_bad = sum(a['duration'] for a in bad_annotations)
             total_time = raw.times[-1]
-            print(f"壞段落比例: {total_bad_duration/total_time*100:.2f}%")
+            print(f"  BAD 片段: {len(bad_annotations)} 個，共 {total_bad:.2f}s"
+                  f"（{total_bad/total_time*100:.1f}%）")
     else:
-        print("\n未標記任何區段")
-    
+        print("\n  未標記任何壞通道或壞片段")
+
+    # ── 儲存到 JSON ────────────────────────────────────────────
+    import json
+    _sid = subject_id if subject_id else 'unknown'
+    os.makedirs(_BAD_MARKING_DIR, exist_ok=True)
+    _save_path = _bad_marking_path(_sid)
+    _data = {
+        'subject_id': _sid,
+        'bad_channels': list(raw.info['bads']),
+        'annotations': [
+            {
+                'onset':       float(ann['onset']),
+                'duration':    float(ann['duration']),
+                'description': str(ann['description'])
+            }
+            for ann in raw.annotations
+        ]
+    }
+    with open(_save_path, 'w', encoding='utf-8') as _f:
+        json.dump(_data, _f, ensure_ascii=False, indent=2)
+    print(f"\n  ✓ 標記已儲存: {_save_path}")
+
     return raw
 
 

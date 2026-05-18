@@ -188,6 +188,15 @@ def _find_and_load(pkl_dir, subject_id, lock_type, phase,
         filename = f"{subject_id}_{phase.lower()}_{lock_type}_{roi_lower}_{cond}_ersp.pkl"
         filepath = data_path / filename
         if not filepath.exists():
+            # Triplet mode fallback: Regular→high, Random→low
+            alt_map  = {'Regular': 'high', 'Random': 'low', 'regular': 'high', 'random': 'low'}
+            alt_type = alt_map.get(trial_type)
+            if alt_type:
+                alt_cond = f"{alt_type}_{group_label}"
+                alt_file = f"{subject_id}_{phase.lower()}_{lock_type}_{roi_lower}_{alt_cond}_ersp.pkl"
+                alt_path = data_path / alt_file
+                if alt_path.exists():
+                    return _load_pkl(alt_path)
             raise FileNotFoundError(f"File not found: {filepath}")
         return _load_pkl(filepath)
 
@@ -244,6 +253,17 @@ def _load_subject_testing_pair(pkl_dir, subject_id, lock_type,
         )
 
     all_files = sorted(data_path.glob(pattern), key=_extract_block_num)
+
+    # Triplet fallback: Regular→high, Random→low
+    if not all_files and lock_type == 'stimulus':
+        alt_map  = {'Regular': 'high', 'Random': 'low', 'regular': 'high', 'random': 'low'}
+        alt_type = alt_map.get(trial_type)
+        if alt_type:
+            alt_pattern = (
+                f"{subject_id}_testing_stimulus_{roi_lower}"
+                f"_{test_type}_{alt_type}_Block*_ersp.pkl"
+            )
+            all_files = sorted(data_path.glob(alt_pattern), key=_extract_block_num)
 
     if not all_files:
         raise FileNotFoundError(
@@ -364,6 +384,8 @@ def _plot_single_electrode_comparison(arr_left, arr_right, freqs, times,
     combined  = np.concatenate([left_mean[:, t_mask].ravel(), right_mean[:, t_mask].ravel()])
     vmax_cond = np.percentile(np.abs(combined), 95)
     vmax_diff = np.percentile(np.abs(diff[:, t_mask].ravel()), 95)
+    if vmax_cond < 1e-10: vmax_cond = 1e-10
+    if vmax_diff < 1e-10: vmax_diff = 1e-10
 
     lv_c = np.linspace(-vmax_cond, vmax_cond, 20)
     lv_d = np.linspace(-vmax_diff, vmax_diff, 20)
@@ -396,15 +418,18 @@ def _plot_single_electrode_comparison(arr_left, arr_right, freqs, times,
 def run_single_electrode_group_analysis(subject_ids, electrodes,
                                          h5_dir, output_dir,
                                          label_left='Regular', label_right='Random',
-                                         condition_left='Regular', condition_right='Random'):
+                                         condition_left='Regular', condition_right='Random',
+                                         stim_h5_dir=None):
     """
     對指定電極執行群體單一電極 ERSP 分析。
     同時處理 Response-locked（h5 全通道）和 Stimulus-locked（h5 全通道，需先跑 option 15）。
 
+    stim_h5_dir: Stimulus h5 目錄（triplet 模式下與 Response 目錄不同）
     輸出目錄：output_dir/electrode_{Fz}/
     """
-    h5_path    = Path(h5_dir)
-    output_path = Path(output_dir)
+    h5_path      = Path(h5_dir)
+    stim_h5_path = Path(stim_h5_dir) if stim_h5_dir else h5_path
+    output_path  = Path(output_dir)
 
     for electrode in electrodes:
         print(f"\n{'='*60}")
@@ -416,6 +441,7 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
 
         for lock_type in ('Response', 'Stimulus'):
             print(f"\n  [{lock_type}-locked]")
+            search_path = stim_h5_path if lock_type == 'Stimulus' else h5_path
 
             # ── Learning ──
             for (bs, be) in LEARNING_GROUPS:
@@ -424,8 +450,8 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                 freqs = times = None
 
                 for sid in subject_ids:
-                    fp_l = h5_path / f'{sid}_{lock_type}_Learning_{gl}_{condition_left}_ERSP.h5'
-                    fp_r = h5_path / f'{sid}_{lock_type}_Learning_{gl}_{condition_right}_ERSP.h5'
+                    fp_l = search_path / f'{sid}_{lock_type}_Learning_{gl}_{condition_left}_ERSP.h5'
+                    fp_r = search_path / f'{sid}_{lock_type}_Learning_{gl}_{condition_right}_ERSP.h5'
                     if not fp_l.exists() or not fp_r.exists():
                         print(f"    ✗ {sid} {gl}: 檔案不存在（{lock_type}）")
                         continue
@@ -456,7 +482,7 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                 sub_blocks = {}
                 for sid in subject_ids:
                     files = sorted(
-                        h5_path.glob(f'{sid}_{lock_type}_{cond_name}_Block*_{condition_left}_ERSP.h5'),
+                        search_path.glob(f'{sid}_{lock_type}_{cond_name}_Block*_{condition_left}_ERSP.h5'),
                         key=lambda fp: int(''.join(filter(str.isdigit,
                             fp.stem.split('Block')[1].split('_')[0].split('-')[0])))
                     )
@@ -545,8 +571,11 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                 freqs = times = None
 
                 for sid in subject_ids:
-                    fp_l = h5_path / f'{sid}_{lock_type}_{_cond_name}_AllBlocks_{condition_left}_ERSP.h5'
-                    fp_r = h5_path / f'{sid}_{lock_type}_{_cond_name}_AllBlocks_{condition_right}_ERSP.h5'
+                    fp_l = search_path / f'{sid}_{lock_type}_{_cond_name}_AllBlocks_{condition_left}_ERSP.h5'
+                    fp_r = search_path / f'{sid}_{lock_type}_{_cond_name}_AllBlocks_{condition_right}_ERSP.h5'
+                    print(f"    [{sid}] 搜尋路徑: {search_path}")
+                    print(f"    [{sid}] fp_l: {fp_l.name} → {'✓ 存在' if fp_l.exists() else '✗ 不存在'}")
+                    print(f"    [{sid}] fp_r: {fp_r.name} → {'✓ 存在' if fp_r.exists() else '✗ 不存在'}")
                     if not fp_l.exists() or not fp_r.exists():
                         print(f"    ✗ {sid} {_cond_name} AllBlocks: 檔案不存在（{lock_type}）")
                         continue
@@ -556,8 +585,9 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                         arr_l.append(el); arr_r.append(er)
                         if freqs is None: freqs, times = f, t
                         ids_found.append(sid)
+                        print(f"    ✓ {sid} {_cond_name} AllBlocks 讀取成功")
                     except Exception as e:
-                        print(f"    ✗ {sid}: {e}")
+                        print(f"    ✗ {sid} 讀取失敗: {e}")
 
                 if not arr_l:
                     continue
@@ -578,8 +608,8 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                     ('MotorTest', _motor_reg, _motor_ran),
                     ('PerceptualTest', _percept_reg, _percept_ran),
                 ]:
-                    fp_l = h5_path / f'{sid}_{lock_type}_{_cn}_AllBlocks_{condition_left}_ERSP.h5'
-                    fp_r = h5_path / f'{sid}_{lock_type}_{_cn}_AllBlocks_{condition_right}_ERSP.h5'
+                    fp_l = search_path / f'{sid}_{lock_type}_{_cn}_AllBlocks_{condition_left}_ERSP.h5'
+                    fp_r = search_path / f'{sid}_{lock_type}_{_cn}_AllBlocks_{condition_right}_ERSP.h5'
                     if fp_l.exists():
                         try: _store_l[sid], _, _ = _load_h5_single_electrode(fp_l, electrode)
                         except Exception: pass
@@ -591,7 +621,7 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                           if s in _motor_reg and s in _motor_ran
                           and s in _percept_reg and s in _percept_ran]
             if _common_mp:
-                _fp_ref = h5_path / f'{_common_mp[0]}_{lock_type}_MotorTest_AllBlocks_{condition_left}_ERSP.h5'
+                _fp_ref = search_path / f'{_common_mp[0]}_{lock_type}_MotorTest_AllBlocks_{condition_left}_ERSP.h5'
                 _freqs_mp = _times_mp = None
                 if _fp_ref.exists():
                     try: _, _freqs_mp, _times_mp = _load_h5_single_electrode(_fp_ref, electrode)
@@ -658,6 +688,8 @@ def _plot_group_motor_perceptual_diff(arr_reg_diff, arr_ran_diff, freqs, times,
     combined  = np.concatenate([reg_mean[:, t_mask].ravel(), ran_mean[:, t_mask].ravel()])
     vmax_cond = np.percentile(np.abs(combined), 95)
     vmax_int  = np.percentile(np.abs(interaction[:, t_mask].ravel()), 95)
+    if vmax_cond < 1e-10: vmax_cond = 1e-10
+    if vmax_int  < 1e-10: vmax_int  = 1e-10
 
     lv_c = np.linspace(-vmax_cond, vmax_cond, 20)
     lv_i = np.linspace(-vmax_int,  vmax_int,  20)
@@ -688,7 +720,8 @@ def _plot_group_motor_perceptual_diff(arr_reg_diff, arr_ran_diff, freqs, times,
 
 
 def _draw_ersp_panel(ax, ersp_2d, freqs, times, title, vmin, vmax, x_min=-0.5, x_max=0.2):
-    levels = np.linspace(vmin, vmax, 20)   # ← 改這行
+    if abs(vmax - vmin) < 1e-10: vmin, vmax = -1e-10, 1e-10
+    levels = np.linspace(vmin, vmax, 20)
     im = ax.contourf(
         times, freqs, ersp_2d,
         levels=levels, cmap='RdBu_r',
@@ -1245,12 +1278,16 @@ def auto_group_ersp_analysis(subject_ids,
                 cond_name = 'MotorTest' if test_type == 'motor' else 'PerceptualTest'
                 lock_cap  = lock_type.capitalize()
 
+                # stimulus-locked AllBlocks 存在 pkl_dir（stim h5 目錄），
+                # response-locked AllBlocks 存在 h5_dir（triplet h5 目錄）
+                _allblocks_dir = Path(pkl_dir) if lock_type == 'stimulus' else Path(h5_dir)
+
                 arr_left_list, arr_right_list, ids_found = [], [], []
                 freqs_p = times_p = None
 
                 for sid in subject_ids:
-                    fp_l = Path(h5_dir) / f'{sid}_{lock_cap}_{cond_name}_AllBlocks_{condition2}_ERSP.h5'
-                    fp_r = Path(h5_dir) / f'{sid}_{lock_cap}_{cond_name}_AllBlocks_{condition1}_ERSP.h5'
+                    fp_l = _allblocks_dir / f'{sid}_{lock_cap}_{cond_name}_AllBlocks_{condition2}_ERSP.h5'
+                    fp_r = _allblocks_dir / f'{sid}_{lock_cap}_{cond_name}_AllBlocks_{condition1}_ERSP.h5'
                     if not fp_l.exists() or not fp_r.exists():
                         continue
                     try:
@@ -1288,13 +1325,16 @@ def auto_group_ersp_analysis(subject_ids,
             percept_reg, percept_ran = {}, {}
             lock_cap = lock_type.capitalize()
 
+            # stimulus-locked AllBlocks 存在 pkl_dir，response-locked 存在 h5_dir
+            _allblocks_dir_mp = Path(pkl_dir) if lock_type == 'stimulus' else Path(h5_dir)
+
             for sid in subject_ids:
                 for cond, store_reg, store_ran in [
                     ('MotorTest', motor_reg, motor_ran),
                     ('PerceptualTest', percept_reg, percept_ran),
                 ]:
-                    fp_l = Path(h5_dir) / f'{sid}_{lock_cap}_{cond}_AllBlocks_{condition2}_ERSP.h5'
-                    fp_r = Path(h5_dir) / f'{sid}_{lock_cap}_{cond}_AllBlocks_{condition1}_ERSP.h5'
+                    fp_l = _allblocks_dir_mp / f'{sid}_{lock_cap}_{cond}_AllBlocks_{condition2}_ERSP.h5'
+                    fp_r = _allblocks_dir_mp / f'{sid}_{lock_cap}_{cond}_AllBlocks_{condition1}_ERSP.h5'
                     if fp_l.exists():
                         try:
                             store_reg[sid], _, _ = _load_h5_response(fp_l, roi_name)
@@ -1313,7 +1353,7 @@ def auto_group_ersp_analysis(subject_ids,
                 continue
 
             freqs_mp = times_mp = None
-            fp_ref = Path(h5_dir) / f'{common_mp[0]}_{lock_cap}_MotorTest_AllBlocks_{condition2}_ERSP.h5'
+            fp_ref = _allblocks_dir_mp / f'{common_mp[0]}_{lock_cap}_MotorTest_AllBlocks_{condition2}_ERSP.h5'
             if fp_ref.exists():
                 try:
                     _, freqs_mp, times_mp = _load_h5_response(fp_ref, roi_name)

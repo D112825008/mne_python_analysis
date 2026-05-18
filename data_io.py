@@ -137,7 +137,10 @@ def load_cnt_file(file_path):
     try:
         print(f"\n正在讀取CNT檔案: {file_path}")
         
-        raw = mne.io.read_raw_cnt(file_path, preload=True, verbose=True)
+        raw = mne.io.read_raw_cnt(file_path, preload=True,
+                                  data_format='int32',  # 或 'int16'
+                                  verbose=True) 
+                                  
         
         try:
             events, event_id = mne.events_from_annotations(raw)

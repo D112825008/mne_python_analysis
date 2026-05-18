@@ -13,7 +13,8 @@ import mne
 # mne_python_analysis 基礎模組
 from mne_python_analysis.preprocessing import (
     preprocess_raw_data_interactive,
-    interactive_marking_bad_segments
+    interactive_marking_bad_segments,
+    load_bad_marking
 )
 from mne_python_analysis.ica_analysis import perform_ica
 from mne_python_analysis.microstate import prepare_for_microstate
@@ -122,7 +123,7 @@ def run_standard_preprocessing(raw, subject_id):
         raise
 
 
-def mark_bad_segments_interactive(raw):
+def mark_bad_segments_interactive(raw, subject_id=None):
     """
     互動式標記壞段落
     
@@ -133,6 +134,8 @@ def mark_bad_segments_interactive(raw):
     ----------
     raw : mne.io.Raw
         Raw 資料物件
+    subject_id : str, optional
+        受試者 ID，用於儲存標記結果
     
     Returns
     -------
@@ -140,7 +143,7 @@ def mark_bad_segments_interactive(raw):
         標記後的 Raw 物件
     """
     try:
-        marked_raw = interactive_marking_bad_segments(raw)
+        marked_raw = interactive_marking_bad_segments(raw, subject_id=subject_id)
         print("✓ 互動式標記壞段落完成")
         return marked_raw
     except Exception as e:

@@ -831,7 +831,7 @@ def perform_ica(raw):
     
     # 直接使用已經過濾的腦波 Use EEG wave which already do the ica analysis
     reject = dict(eeg=500e-6)  # 500 ÂµV threshold
-    ica.fit(raw_for_fitting, picks=picks, reject=reject)
+    ica.fit(raw_for_fitting, picks=picks, reject=reject, reject_by_annotation=True)
     print("✓ ICA fitting 完成")
     
     # 計算EOG artifact分數（如果有EOG通道且參與了ICA）

@@ -380,6 +380,9 @@ def response_ersp_from_current_epochs(
             print(f"{'─'*70}")
 
             for key, trial_results in results.items():
+                # AllBlocks 由下方 Pooled 區段專門處理，主迴圈跳過避免重複繪圖
+                if key.endswith('_AllBlocks'):
+                    continue
                 power_dicts = {}
 
                 for trial_type, tfr in trial_results.items():
