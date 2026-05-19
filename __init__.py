@@ -15,13 +15,14 @@ from . import preprocessing
 from . import epochs
 from . import spectral_analysis
 from . import roi_analysis
+from . import statistical_analysis
+from . import response_lock
+from . import group_ersp_analysis
 from . import utils
 
-# 視覺化獨立模組
-try:
-    from . import asrt_visualization
-except ImportError:
-    pass  # 視覺化模組可選
+# 導入子套件
+from . import asrt
+from . import ui
 
 # 導入常用函數（方便直接使用）
 from .data_io import load_bids_eeg, load_cnt_file
@@ -34,6 +35,7 @@ from .roi_analysis import define_roi_channels
 
 # 定義公開的 API
 __all__ = [
+    # 核心模組
     'data_io',
     'montage',
     'signal_processing',
@@ -42,7 +44,13 @@ __all__ = [
     'epochs',
     'spectral_analysis',
     'roi_analysis',
+    'statistical_analysis',
+    'response_lock',
+    'group_ersp_analysis',
     'utils',
+    # 子套件
+    'asrt',
+    'ui',
     # 常用函數
     'load_bids_eeg',
     'load_cnt_file',
