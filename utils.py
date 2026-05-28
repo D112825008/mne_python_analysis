@@ -83,7 +83,7 @@ def plot_psd(raw, fmax=50, block=True):
     return fig
 
 
-def set_matplotlib_properties(family='Microsoft JhengHei'):
+def set_matplotlib_properties(family='DejaVu Sans'):
     """
     設定Matplotlib字體。
     

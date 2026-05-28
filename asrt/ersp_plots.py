@@ -129,7 +129,8 @@ def plot_ersp_comparison(power_by_condition, subject_id, condition_labels, outpu
     plt.close(fig)
 
 
-def plot_learning_comparison(results, subject_id, lock_type, output_dir, block_label=None):
+def plot_learning_comparison(results, subject_id, lock_type, output_dir, block_label=None,
+                              trial_counts=None):
     """
     繪製 Learning 階段比較圖 (Regular vs Random)，每個 ROI 各自產一張圖。
 
@@ -146,14 +147,19 @@ def plot_learning_comparison(results, subject_id, lock_type, output_dir, block_l
     roi_names = list(results[cond_keys[0]].keys())
 
     for roi_name in roi_names:
-        if 'high' in cond_keys:
+        # 新標籤：regular_high vs random_low（主比較）
+        if 'regular_high' in cond_keys and 'random_low' in cond_keys:
+            data_left  = results['regular_high'][roi_name]
+            data_right = results['random_low'][roi_name]
+            label_left, label_right = 'Regular High', 'Random Low'
+        elif 'high' in cond_keys:
             data_left  = results['high'][roi_name]
             data_right = results['low'][roi_name]
-            label_left, label_right = 'high', 'low'
+            label_left, label_right = 'High', 'Low'
         else:
             data_left  = results['Regular'][roi_name]
             data_right = results['Random'][roi_name]
-            label_left, label_right = 'Regular', 'Random' 
+            label_left, label_right = 'Regular', 'Random'
 
         diff_power = data_left['power'] - data_right['power']
 
@@ -174,6 +180,12 @@ def plot_learning_comparison(results, subject_id, lock_type, output_dir, block_l
         vmax_diff = np.percentile(np.abs(diff_power[:, t_mask].ravel()), 95)
         vmin_diff = -vmax_diff
 
+        # 取得 trial 數標注（若有提供 trial_counts）
+        def _n_str(key):
+            if trial_counts and key in trial_counts:
+                return f"\n(n={trial_counts[key]} trials)"
+            return ""
+
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
         def _panel(ax, power, title, vmin, vmax, xlabel=False):
@@ -190,10 +202,16 @@ def plot_learning_comparison(results, subject_id, lock_type, output_dir, block_l
             ax.set_ylim([freqs[0], freqs[-1]])
             return im
 
-        im1 = _panel(axes[0], data_left['power'], label_left, vmin_cond, vmax_cond)
+        # 決定用哪個 key 查詢 trial_counts
+        cond_key_left  = 'regular_high' if 'regular_high' in cond_keys else ('high' if 'high' in cond_keys else 'Regular')
+        cond_key_right = 'random_low'   if 'random_low'   in cond_keys else ('low'  if 'low'  in cond_keys else 'Random')
+
+        im1 = _panel(axes[0], data_left['power'],
+                     f'{label_left}{_n_str(cond_key_left)}', vmin_cond, vmax_cond)
         plt.colorbar(im1, ax=axes[0], label='Power (dB)')
 
-        im2 = _panel(axes[1], data_right['power'], label_right, vmin_cond, vmax_cond)
+        im2 = _panel(axes[1], data_right['power'],
+                     f'{label_right}{_n_str(cond_key_right)}', vmin_cond, vmax_cond)
         plt.colorbar(im2, ax=axes[1], label='Power (dB)')
 
         im3 = _panel(axes[2], diff_power,
@@ -216,7 +234,8 @@ def plot_learning_comparison(results, subject_id, lock_type, output_dir, block_l
         plt.close(fig)
 
 
-def plot_testing_comparison(results, subject_id, lock_type, test_type, output_dir, block_label=None):
+def plot_testing_comparison(results, subject_id, lock_type, test_type, output_dir, block_label=None,
+                             trial_counts=None):
     """
     繪製 Testing 階段比較圖 (Regular vs Random)，每個 ROI 各自產一張圖。
 
@@ -234,14 +253,19 @@ def plot_testing_comparison(results, subject_id, lock_type, test_type, output_di
     roi_names = list(results[cond_keys[0]].keys())
 
     for roi_name in roi_names:
-        if 'high' in cond_keys:
+        # 新標籤：regular_high vs random_low（主比較）
+        if 'regular_high' in cond_keys and 'random_low' in cond_keys:
+            data_left  = results['regular_high'][roi_name]
+            data_right = results['random_low'][roi_name]
+            label_left, label_right = 'Regular High', 'Random Low'
+        elif 'high' in cond_keys:
             data_left  = results['high'][roi_name]
             data_right = results['low'][roi_name]
-            label_left, label_right = 'high', 'low'
+            label_left, label_right = 'High', 'Low'
         else:
             data_left  = results['Regular'][roi_name]
             data_right = results['Random'][roi_name]
-            label_left, label_right = 'Regular', 'Random' 
+            label_left, label_right = 'Regular', 'Random'
 
         diff_power = data_left['power'] - data_right['power']
 
@@ -261,6 +285,15 @@ def plot_testing_comparison(results, subject_id, lock_type, test_type, output_di
         vmax_diff = np.percentile(np.abs(diff_power[:, t_mask].ravel()), 95)
         vmin_diff = -vmax_diff
 
+        # 取得 trial 數標注
+        def _n_str_t(key):
+            if trial_counts and key in trial_counts:
+                return f"\n(n={trial_counts[key]} trials)"
+            return ""
+
+        cond_key_left  = 'regular_high' if 'regular_high' in cond_keys else ('high' if 'high' in cond_keys else 'Regular')
+        cond_key_right = 'random_low'   if 'random_low'   in cond_keys else ('low'  if 'low'  in cond_keys else 'Random')
+
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
         def _panel(ax, power, title, vmin, vmax, xlabel=False):
@@ -277,10 +310,12 @@ def plot_testing_comparison(results, subject_id, lock_type, test_type, output_di
             ax.set_ylim([freqs[0], freqs[-1]])
             return im
 
-        im1 = _panel(axes[0], data_left['power'], label_left, vmin_cond, vmax_cond)
+        im1 = _panel(axes[0], data_left['power'],
+                     f'{label_left}{_n_str_t(cond_key_left)}', vmin_cond, vmax_cond)
         plt.colorbar(im1, ax=axes[0], label='Power (dB)')
 
-        im2 = _panel(axes[1], data_right['power'], label_right, vmin_cond, vmax_cond)
+        im2 = _panel(axes[1], data_right['power'],
+                     f'{label_right}{_n_str_t(cond_key_right)}', vmin_cond, vmax_cond)
         plt.colorbar(im2, ax=axes[1], label='Power (dB)')
 
         im3 = _panel(axes[2], diff_power,
@@ -316,10 +351,15 @@ def plot_motor_perceptual_comparison(motor_results, perceptual_results,
     os.makedirs(output_dir, exist_ok=True)
 
     cond_keys = list(motor_results.keys())
-    if 'high' in cond_keys:
+    if 'regular_high' in cond_keys:
+        label_left, label_right = 'regular_high', 'random_low'
+        disp_left,  disp_right  = 'Regular High', 'Random Low'
+    elif 'high' in cond_keys:
         label_left, label_right = 'high', 'low'
+        disp_left,  disp_right  = 'High', 'Low'
     else:
         label_left, label_right = 'Regular', 'Random'
+        disp_left,  disp_right  = 'Regular', 'Random'
 
     if label_left not in motor_results or label_left not in perceptual_results:
         print(f"  ⚠ Motor-Perceptual 差值圖：找不到 {label_left} 資料，跳過")
@@ -367,17 +407,17 @@ def plot_motor_perceptual_comparison(motor_results, perceptual_results,
             return im
 
         im1 = _panel(axes[0], reg_diff,
-                     f'{label_left} Motor \u2212 {label_left} Perceptual',
+                     f'{disp_left} Motor \u2212 {label_left} Perceptual',
                      -vmax_cond, vmax_cond)
         plt.colorbar(im1, ax=axes[0], label='Power diff (dB)')
 
         im2 = _panel(axes[1], ran_diff,
-                     f'{label_right} Motor \u2212 {label_right} Perceptual',
+                     f'{disp_right} Motor \u2212 {label_right} Perceptual',
                      -vmax_cond, vmax_cond)
         plt.colorbar(im2, ax=axes[1], label='Power diff (dB)')
 
         im3 = _panel(axes[2], interaction,
-                     f'Interaction\n({label_left} M\u2212P) \u2212 ({label_right} M\u2212P)',
+                     f'Interaction\n({disp_left} M\u2212P) \u2212 ({label_right} M\u2212P)',
                      -vmax_int, vmax_int, xlabel=True)
         plt.colorbar(im3, ax=axes[2], label='Power diff (dB)')
 
@@ -395,4 +435,196 @@ def plot_motor_perceptual_comparison(motor_results, perceptual_results,
         output_path = os.path.join(output_dir, filename)
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         print(f"  \u2713 Motor vs Perceptual {roi_name} 比較圖已儲存: {output_path}")
+        plt.close(fig)
+
+
+def plot_triplet_comparison(results, subject_id, lock_type, output_dir,
+                            cond1='regular_high', cond2='random_low',
+                            phase_label='Learning', block_label=None,
+                            trial_counts=None):
+    """
+    繪製任意兩個 triplet 條件的 ERSP 比較圖。
+
+    預設：Regular High vs Random Low
+    也可指定：Regular High vs Random High、Random High vs Random Low 等
+
+    Layout: figsize=(18,5)，3 subplot 橫排：cond1 | cond2 | Difference (cond1 - cond2)
+    """
+    import os
+    os.makedirs(output_dir, exist_ok=True)
+
+    DISP = {
+        'regular_high': 'Regular High',
+        'random_high':  'Random High',
+        'random_low':   'Random Low',
+        'high': 'High', 'low': 'Low',
+    }
+
+    if cond1 not in results or cond2 not in results:
+        missing = [c for c in [cond1, cond2] if c not in results]
+        print(f"  ⚠ plot_triplet_comparison：缺少條件 {missing}，跳過")
+        return
+
+    _block_suffix = f"_{block_label}" if block_label else ""
+    _block_str    = f" | {block_label}" if block_label else ""
+    disp1 = DISP.get(cond1, cond1)
+    disp2 = DISP.get(cond2, cond2)
+
+    roi_names = list(results[cond1].keys())
+
+    for roi_name in roi_names:
+        d1 = results[cond1][roi_name]
+        d2 = results[cond2][roi_name]
+        diff_power = d1['power'] - d2['power']
+        times = d1['times'] * 1000
+        freqs = d1['freqs']
+        x_min, x_max = -500, 500
+        t_mask = (times >= x_min) & (times <= x_max)
+
+        combined  = np.concatenate([d1['power'][:, t_mask].ravel(),
+                                     d2['power'][:, t_mask].ravel()])
+        vmax_cond = np.percentile(np.abs(combined), 95)
+        vmax_diff = np.percentile(np.abs(diff_power[:, t_mask].ravel()), 95)
+
+        # 取得 trial 數標注
+        n_str1 = f"\n(n={trial_counts[cond1]} trials)" if (trial_counts and cond1 in trial_counts) else ""
+        n_str2 = f"\n(n={trial_counts[cond2]} trials)" if (trial_counts and cond2 in trial_counts) else ""
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+        def _panel(ax, power, title, vmin, vmax, xlabel=False):
+            levels = np.linspace(vmin, vmax, 20)
+            im = ax.contourf(times, freqs, power,
+                             levels=levels, cmap='RdBu_r',
+                             vmin=vmin, vmax=vmax, extend='both')
+            ax.axvline(0, color='black', linestyle='--', linewidth=1.5)
+            ax.set_title(title, fontsize=12, fontweight='bold')
+            ax.set_ylabel('Frequency (Hz)', fontsize=11)
+            if xlabel:
+                ax.set_xlabel('Time (ms)', fontsize=11)
+            ax.set_xlim([x_min, x_max])
+            ax.set_ylim([freqs[0], freqs[-1]])
+            return im
+
+        im1 = _panel(axes[0], d1['power'], f'{disp1}{n_str1}', -vmax_cond, vmax_cond)
+        plt.colorbar(im1, ax=axes[0], label='Power (dB)')
+
+        im2 = _panel(axes[1], d2['power'], f'{disp2}{n_str2}', -vmax_cond, vmax_cond)
+        plt.colorbar(im2, ax=axes[1], label='Power (dB)')
+
+        im3 = _panel(axes[2], diff_power,
+                     f'Diff ({disp1} − {disp2})',
+                     -vmax_diff, vmax_diff, xlabel=True)
+        plt.colorbar(im3, ax=axes[2], label='Power diff (dB)')
+
+        fig.suptitle(
+            f'{subject_id} | {lock_type.capitalize()}-locked | '
+            f'{phase_label}{_block_str} | {roi_name} | {disp1} vs {disp2}',
+            fontsize=12, fontweight='bold'
+        )
+        plt.tight_layout()
+
+        fname_cond = f"{cond1}_vs_{cond2}"
+        filename = (
+            f'{subject_id}_{lock_type}_lock_{phase_label.lower()}{_block_suffix}'
+            f'_{roi_name}_{fname_cond}_ersp.png'
+        )
+        output_path = os.path.join(output_dir, filename)
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"  ✓ {disp1} vs {disp2} | {roi_name} 已儲存: {output_path}")
+        plt.close(fig)
+
+
+def plot_epoch_diff_comparison(data_e1, data_e4, subject_id, lock_type, output_dir,
+                                condition_label, trial_type_key,
+                                n_e1=None, n_e4=None):
+    """
+    繪製同一條件 Epoch 4 (Block22-26) vs Epoch 1 (Block7-11) 的 ERSP 比較圖。
+
+    Layout: figsize=(18,5)，3 subplot 橫排：
+      Epoch 4 | Epoch 1 | Diff (Epoch 4 − Epoch 1)
+
+    Parameters
+    ----------
+    data_e1 : dict  {roi_name: power_dict}   Epoch 1 資料（Block7-11）
+    data_e4 : dict  {roi_name: power_dict}   Epoch 4 資料（Block22-26）
+    subject_id : str
+    lock_type : str   'stimulus' 或 'response'
+    output_dir : str
+    condition_label : str   顯示用名稱，例如 'Regular High'
+    trial_type_key : str    檔名用 key，例如 'regular_high'
+    n_e1, n_e4 : int or None   trial 數，顯示在標題
+    """
+    import os
+    os.makedirs(output_dir, exist_ok=True)
+
+    roi_names = list(data_e1.keys())
+
+    for roi_name in roi_names:
+        if roi_name not in data_e4:
+            continue
+
+        d1 = data_e1[roi_name]   # Epoch 1
+        d4 = data_e4[roi_name]   # Epoch 4
+        diff_power = d4['power'] - d1['power']   # Epoch 4 − Epoch 1
+
+        times = d1['times'] * 1000
+        freqs = d1['freqs']
+        x_min, x_max = -500, 500
+        t_mask = (times >= x_min) & (times <= x_max)
+
+        combined  = np.concatenate([d4['power'][:, t_mask].ravel(),
+                                     d1['power'][:, t_mask].ravel()])
+        vmax_cond = np.percentile(np.abs(combined), 95)
+        vmin_cond = -vmax_cond
+        vmax_diff = np.percentile(np.abs(diff_power[:, t_mask].ravel()), 95)
+        vmin_diff = -vmax_diff
+        if vmax_cond < 1e-10: vmax_cond = 1e-10
+        if vmax_diff < 1e-10: vmax_diff = 1e-10
+
+        n_str4 = f"\n(n={n_e4} trials)" if n_e4 else ""
+        n_str1 = f"\n(n={n_e1} trials)" if n_e1 else ""
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+        def _panel(ax, power, title, vmin, vmax, xlabel=False):
+            levels = np.linspace(vmin, vmax, 20)
+            im = ax.contourf(times, freqs, power,
+                             levels=levels, cmap='RdBu_r',
+                             vmin=vmin, vmax=vmax, extend='both')
+            ax.axvline(0, color='black', linestyle='--', linewidth=1.5)
+            ax.set_title(title, fontsize=12, fontweight='bold')
+            ax.set_ylabel('Frequency (Hz)', fontsize=11)
+            if xlabel:
+                ax.set_xlabel('Time (ms)', fontsize=11)
+            ax.set_xlim([x_min, x_max])
+            ax.set_ylim([freqs[0], freqs[-1]])
+            return im
+
+        im1 = _panel(axes[0], d4['power'],
+                     f'Epoch 4 (Block22-26){n_str4}', vmin_cond, vmax_cond)
+        plt.colorbar(im1, ax=axes[0], label='Power (dB)')
+
+        im2 = _panel(axes[1], d1['power'],
+                     f'Epoch 1 (Block7-11){n_str1}', vmin_cond, vmax_cond)
+        plt.colorbar(im2, ax=axes[1], label='Power (dB)')
+
+        im3 = _panel(axes[2], diff_power,
+                     'Diff (Epoch 4 − Epoch 1)', vmin_diff, vmax_diff, xlabel=True)
+        plt.colorbar(im3, ax=axes[2], label='Power diff (dB)')
+
+        fig.suptitle(
+            f'{subject_id} | {lock_type.capitalize()}-locked | '
+            f'Learning: Epoch 4 vs Epoch 1 | {condition_label} | {roi_name}',
+            fontsize=12, fontweight='bold'
+        )
+        plt.tight_layout()
+
+        filename = (
+            f'{subject_id}_{lock_type}_lock_learning_epoch4_vs_epoch1'
+            f'_{trial_type_key}_{roi_name}_ersp.png'
+        )
+        out_path = os.path.join(output_dir, filename)
+        plt.savefig(out_path, dpi=300, bbox_inches='tight')
+        print(f"  ✓ Epoch4 vs Epoch1 | {condition_label} | {roi_name} 已儲存: {out_path}")
         plt.close(fig)

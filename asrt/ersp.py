@@ -15,6 +15,8 @@ from .ersp_plots import (
     plot_learning_comparison,
     plot_testing_comparison,
     plot_motor_perceptual_comparison,
+    plot_triplet_comparison,
+    plot_epoch_diff_comparison,
 )
 
 # 群體分析（可選）
@@ -107,7 +109,8 @@ def _compute_single_ersp(epochs_subset, available_groups, freqs, n_cycles,
             'power':    power.data.mean(axis=0),   # (freqs, times)
             'times':    power.times,
             'freqs':    power.freqs,
-            'channels': valid_ch
+            'channels': valid_ch,
+            'nave':     len(epochs_subset),         # 供後續追溯 trial 數
         }
         print(f"    ✓ {roi_name} 完成")
 
@@ -286,7 +289,7 @@ def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir
                 use_fft=True,
                 return_itc=False,
                 average=True,
-                n_jobs=-1
+                n_jobs=1
             )
             if baseline_method == 'whole_epoch':
                 power.apply_baseline(mode='logratio', baseline=(None, None))
@@ -297,7 +300,8 @@ def asrt_ersp_analysis(epochs, subject_id, freqs=None, n_cycles=None, output_dir
                 'power':    power.data.mean(axis=0),
                 'times':    power.times,
                 'freqs':    power.freqs,
-                'channels': channels
+                'channels': channels,
+                'nave':     len(epochs),
             }
             print(f"  ✓ {roi_name} 完成")
 
@@ -400,6 +404,19 @@ def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='sti
         完整的分析結果
     """
     
+    # ── Log 檔 ──
+    import logging as _logging, os as _os
+    _log_dir = _os.path.normpath(_os.path.join(str(output_dir), '..', 'ersp_logs'))
+    _os.makedirs(_log_dir, exist_ok=True)
+    _log_path = _os.path.join(_log_dir, f"{subject_id}_{phase}_{lock_type}_ersp.log")
+    _logger = _logging.getLogger(f"ersp.{subject_id}.{phase}.{lock_type}")
+    _logger.setLevel(_logging.DEBUG)
+    if not _logger.handlers:
+        _fh = _logging.FileHandler(_log_path, mode='w', encoding='utf-8')
+        _fh.setFormatter(_logging.Formatter('%(asctime)s %(message)s', datefmt='%H:%M:%S'))
+        _logger.addHandler(_fh)
+    _logger.info(f"START subject={subject_id} phase={phase} lock={lock_type} save_for_group={save_for_group_analysis} group_data_dir={group_data_dir}")
+
     print(f"\n{'='*60}")
     print(f"完整 ASRT ERSP 分析")
     print(f"{'='*60}")
@@ -465,6 +482,9 @@ def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='sti
                     for roi_name, roi_data in power_dict.items():
                         try:
                             condition_name = f"{trial_type}_{group_label}"
+                            _nave_val = int(roi_data.get('nave', -1))
+                            _logger.info(f"SAVE_PKL {condition_name}|{roi_name}|nave={_nave_val}|roi_keys={list(roi_data.keys())}")
+                            print(f"[ERSP LOG] pkl: {condition_name} | {roi_name} | nave={_nave_val}")
                             save_subject_ersp(
                                 ersp_data=roi_data['power'],
                                 subject_id=subject_id,
@@ -474,6 +494,7 @@ def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='sti
                                 freqs=roi_data['freqs'],
                                 times=roi_data['times'],
                                 roi_name=roi_name.lower(),
+                                nave=_nave_val,
                                 output_dir=group_data_dir
                             )
                             saved_count += 1
@@ -504,6 +525,7 @@ def asrt_ersp_full_analysis(epochs, subject_id, phase='learning', lock_type='sti
                                     freqs=roi_data['freqs'],
                                     times=roi_data['times'],
                                     roi_name=roi_name.lower(),
+                                    nave=int(roi_data.get('nave', -1)),
                                     output_dir=group_data_dir
                                 )
                                 saved_count += 1
@@ -600,6 +622,7 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
 
             group_results = {}
             trial_types = sorted(epochs_group.metadata['trial_type'].dropna().unique().tolist())
+            trial_counts = {}   # 記錄各條件 trial 數（供圖片標題追溯）
             for trial_type in trial_types:
                 mask = epochs_group.metadata['trial_type'] == trial_type
                 epochs_subset = epochs_group[mask]
@@ -609,6 +632,7 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
                     continue
 
                 print(f"    {trial_type}: {len(epochs_subset)} trials")
+                trial_counts[trial_type] = len(epochs_subset)
 
                 power_dict = asrt_ersp_analysis(
                     epochs_subset,
@@ -632,21 +656,129 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
 
             available = list(group_results.keys())
             if len(available) >= 2:
-                cond1, cond2 = available[0], available[1]
                 plot_learning_comparison(
                     group_results, subject_id, lock_type, output_dir,
-                    block_label=group_label
+                    block_label=group_label,
+                    trial_counts=trial_counts,
                 )
+            # 三組比較圖（Regular High vs Random Low、Regular High vs Random High、Random High vs Random Low）
+            for c1, c2 in [('regular_high', 'random_low'),
+                           ('regular_high', 'random_high'),
+                           ('random_high',  'random_low')]:
+                plot_triplet_comparison(
+                    group_results, subject_id, lock_type, output_dir,
+                    cond1=c1, cond2=c2,
+                    phase_label='Learning', block_label=group_label,
+                    trial_counts=trial_counts,
+                )
+
+        # ── Pooled Learning Analysis（所有 block 合併）──────────────
+        print(f"\n{'─'*60}")
+        print(f"  Learning 階段 Pooled 分析（所有 block 合併）")
+        print(f"{'─'*60}")
+
+        _all_trial_types = sorted(epochs.metadata['trial_type'].dropna().unique().tolist())
+        _allblocks_results = {}
+
+        print(f"\n  {'─'*50}")
+        print(f"  Learning AllBlocks（{len(epochs)} trials）")
+        print(f"  {'─'*50}")
+
+        _allblocks_trial_counts = {}   # 記錄 AllBlocks 各條件 trial 數
+        for _trial_type in _all_trial_types:
+            _mask = epochs.metadata['trial_type'] == _trial_type
+            _epochs_subset = epochs[_mask]
+
+            if len(_epochs_subset) == 0:
+                print(f"    ⚠️  {_trial_type}: 沒有資料")
+                continue
+
+            print(f"    {_trial_type}: {len(_epochs_subset)} trials")
+            _allblocks_trial_counts[_trial_type] = len(_epochs_subset)
+
+            _power_dict = asrt_ersp_analysis(
+                _epochs_subset,
+                subject_id=f"{subject_id}_{lock_type}_learning_AllBlocks_{_trial_type}",
+                freqs=freqs,
+                n_cycles=n_cycles,
+                output_dir=output_dir,
+                do_td_baseline=do_td_baseline,
+                baseline_method=baseline_method,
+            )
+            _allblocks_results[_trial_type] = _power_dict
+
+            if save_for_group and group_data_dir and lock_type == 'stimulus':
+                _save_fullchannel_stimulus_h5(
+                    _epochs_subset, freqs, n_cycles, baseline_method,
+                    subject_id, 'Learning', 'AllBlocks', _trial_type,
+                    group_data_dir, baseline_window=baseline_window,
+                )
+
+        results['AllBlocks'] = _allblocks_results
+
+        if len(_allblocks_results) >= 2:
+            plot_learning_comparison(
+                _allblocks_results, subject_id, lock_type, output_dir,
+                block_label='AllBlocks',
+                trial_counts=_allblocks_trial_counts,
+            )
+        for _c1, _c2 in [('regular_high', 'random_low'),
+                          ('regular_high', 'random_high'),
+                          ('random_high',  'random_low')]:
+            plot_triplet_comparison(
+                _allblocks_results, subject_id, lock_type, output_dir,
+                cond1=_c1, cond2=_c2,
+                phase_label='Learning', block_label='AllBlocks',
+                trial_counts=_allblocks_trial_counts,
+            )
+
+        # ── Epoch 4 vs Epoch 1 比較（Block22-26 vs Block7-11）──────────
+        _E1_KEY = 'Block7-11'
+        _E4_KEY = 'Block22-26'
+        if _E1_KEY in results and _E4_KEY in results:
+            print(f"\n{'─'*60}")
+            print(f"  Learning Epoch 4 vs Epoch 1 比較")
+            print(f"{'─'*60}")
+            _COND_DISP = {
+                'regular_high': 'Regular High',
+                'random_high':  'Random High',
+                'random_low':   'Random Low',
+                'Regular':      'Regular',
+                'Random':       'Random',
+            }
+            _e1_results = results[_E1_KEY]   # {trial_type: power_dict}
+            _e4_results = results[_E4_KEY]
+
+            for _cond_key in sorted(_e1_results.keys()):
+                if _cond_key not in _e4_results:
+                    print(f"    ⚠ {_cond_key}: Epoch 4 資料缺失，跳過")
+                    continue
+                _disp = _COND_DISP.get(_cond_key, _cond_key)
+                # 取出各 epoch 的 trial 數（若有記錄）
+                # results[group_label] = {trial_type: power_dict}，不直接含 trial 數，
+                # 從 power_dict 各 ROI 的第一個 key 的 trial info 無法直接取，故不傳入
+                plot_epoch_diff_comparison(
+                    data_e1=_e1_results[_cond_key],
+                    data_e4=_e4_results[_cond_key],
+                    subject_id=subject_id,
+                    lock_type=lock_type,
+                    output_dir=output_dir,
+                    condition_label=_disp,
+                    trial_type_key=_cond_key,
+                )
+
     else:
         # 沒有 block 欄位時，fallback 為整體分析
         print(f"  ⚠️  metadata 無 'block' 欄位，改為整體分析")
         trial_types = sorted(epochs.metadata['trial_type'].dropna().unique().tolist())
+        _fallback_trial_counts = {}
         for trial_type in trial_types:
             mask = epochs.metadata['trial_type'] == trial_type
             epochs_subset = epochs[mask]
             if len(epochs_subset) == 0:
                 continue
             print(f"\n  {trial_type}: {len(epochs_subset)} trials")
+            _fallback_trial_counts[trial_type] = len(epochs_subset)
             power_dict = asrt_ersp_analysis(
                 epochs_subset,
                 subject_id=f"{subject_id}_{lock_type}_learning_{trial_type}",
@@ -657,7 +789,8 @@ def _ersp_learning_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_
 
         available = list(results.keys())
         if len(available) >= 2:
-            plot_learning_comparison(results, subject_id, lock_type, output_dir)
+            plot_learning_comparison(results, subject_id, lock_type, output_dir,
+                                     trial_counts=_fallback_trial_counts)
 
     return results
 
@@ -714,6 +847,7 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
                 print(f"\n    {test_type.upper()}")
 
                 test_results = {}
+                _test_trial_counts = {}   # 記錄各條件 trial 數
                 trial_types = sorted(epochs_group.metadata['trial_type'].dropna().unique().tolist())
                 for trial_type in trial_types:
                     mask = (
@@ -727,6 +861,7 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
                         continue
 
                     print(f"      {trial_type}: {len(epochs_subset)} trials")
+                    _test_trial_counts[trial_type] = len(epochs_subset)
 
                     power_dict = asrt_ersp_analysis(
                         epochs_subset,
@@ -755,14 +890,26 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
                         lock_type,
                         test_type,
                         output_dir,
-                        block_label=group_label
+                        block_label=group_label,
+                        trial_counts=_test_trial_counts,
                     )
+                    _phase_lbl = 'MotorTest' if test_type == 'motor' else 'PerceptualTest'
+                    for _c1, _c2 in [('regular_high', 'random_low'),
+                                      ('regular_high', 'random_high'),
+                                      ('random_high',  'random_low')]:
+                        plot_triplet_comparison(
+                            test_results, subject_id, lock_type, output_dir,
+                            cond1=_c1, cond2=_c2,
+                            phase_label=_phase_lbl, block_label=group_label,
+                            trial_counts=_test_trial_counts,
+                        )
     else:
         # 沒有 block 欄位時，fallback 為整體分析
         print(f"  ⚠️  metadata 無 'block' 欄位，改為整體分析")
         trial_types = sorted(epochs.metadata['trial_type'].dropna().unique().tolist())
         for test_type in ['motor', 'perceptual']:
             results[test_type] = {}
+            _fb_test_counts = {}
             print(f"\n  {test_type.upper()}")
             for trial_type in trial_types:
                 mask = (
@@ -773,6 +920,7 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
                 if len(epochs_subset) == 0:
                     continue
                 print(f"    {trial_type}: {len(epochs_subset)} trials")
+                _fb_test_counts[trial_type] = len(epochs_subset)
                 power_dict = asrt_ersp_analysis(
                     epochs_subset,
                     subject_id=f"{subject_id}_{lock_type}_testing_{test_type}_{trial_type}",
@@ -783,7 +931,8 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
 
             if len(results[test_type]) >= 2:
                 plot_testing_comparison(
-                    results[test_type], subject_id, lock_type, test_type, output_dir
+                    results[test_type], subject_id, lock_type, test_type, output_dir,
+                    trial_counts=_fb_test_counts,
                 )
 
     # ── Pooled Testing Analysis（所有 block 合併）──────────────────
@@ -806,6 +955,7 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
         print(f"  {'─'*50}")
 
         _test_results_pooled = {}
+        _pooled_trial_counts  = {}   # 記錄 Pooled 各條件 trial 數
         _trial_types_p = sorted(_pooled_epochs.metadata['trial_type'].dropna().unique().tolist())
 
         for _trial_type in _trial_types_p:
@@ -817,6 +967,7 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
                 continue
 
             print(f"    {_trial_type}: {len(_epochs_subset)} trials")
+            _pooled_trial_counts[_trial_type] = len(_epochs_subset)
 
             _power_dict = asrt_ersp_analysis(
                 _epochs_subset,
@@ -842,8 +993,19 @@ def _ersp_testing_phase(epochs, subject_id, lock_type, freqs, n_cycles, output_d
         if len(_test_results_pooled) >= 2:
             plot_testing_comparison(
                 _test_results_pooled, subject_id, lock_type, _test_type, output_dir,
-                block_label='AllBlocks'
+                block_label='AllBlocks',
+                trial_counts=_pooled_trial_counts,
             )
+            _phase_lbl_p = 'MotorTest' if _test_type == 'motor' else 'PerceptualTest'
+            for _c1, _c2 in [('regular_high', 'random_low'),
+                              ('regular_high', 'random_high'),
+                              ('random_high',  'random_low')]:
+                plot_triplet_comparison(
+                    _test_results_pooled, subject_id, lock_type, output_dir,
+                    cond1=_c1, cond2=_c2,
+                    phase_label=_phase_lbl_p, block_label='AllBlocks',
+                    trial_counts=_pooled_trial_counts,
+                )
 
     # Motor vs Perceptual diff
     if (len(pooled_test_results.get('motor', {})) >= 2 and

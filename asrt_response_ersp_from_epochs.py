@@ -266,6 +266,11 @@ def response_ersp_from_current_epochs(
                 os.makedirs(output_dir, exist_ok=True)
                 h5_fname = f"{subject_id}_Response_{cond_name}_{group_label}_{trial_type}_ERSP.h5"
                 out_path = os.path.join(output_dir, h5_fname)
+                # 存入可追溯的 comment（nave 已由 _compute_pertrial_ersp 自動設定）
+                power.comment = (
+                    f"sub={subject_id} | cond={cond_name} | group={group_label} | "
+                    f"trial_type={trial_type} | n_trials={sub_n}"
+                )
                 power.save(out_path, overwrite=True)
                 print(f"  ✓ 已儲存：{out_path}")
 
@@ -373,6 +378,7 @@ def response_ersp_from_current_epochs(
                 plot_ersp_lum2023_style,
                 plot_learning_comparison,
                 plot_testing_comparison,
+                plot_triplet_comparison,
             )
 
             print(f"\n{'─'*70}")
@@ -384,6 +390,8 @@ def response_ersp_from_current_epochs(
                 if key.endswith('_AllBlocks'):
                     continue
                 power_dicts = {}
+                # 從 AverageTFR 物件取得每個條件的 trial 數（追溯用）
+                trial_counts_map = {}
 
                 for trial_type, tfr in trial_results.items():
                     pd_ = _tfr_to_power_dict(tfr)
@@ -391,6 +399,8 @@ def response_ersp_from_current_epochs(
                         print(f"  ⚠  {key}/{trial_type}：找不到可用 ROI，略過")
                         continue
                     power_dicts[trial_type] = pd_
+                    if hasattr(tfr, 'nave') and tfr.nave is not None:
+                        trial_counts_map[trial_type] = int(tfr.nave)
 
                     plot_ersp_lum2023_style(
                         pd_,
@@ -406,43 +416,73 @@ def response_ersp_from_current_epochs(
 
                     if cond_name == 'Learning':
                         plot_learning_comparison(
-                            {cond1: power_dicts[cond1],
-                             cond2: power_dicts[cond2]},
+                            power_dicts,
                             subject_id=subject_id,
                             lock_type='response',
                             output_dir=plot_dir,
                             block_label=group_label,
+                            trial_counts=trial_counts_map,
                         )
+                        for _c1, _c2 in [('regular_high', 'random_low'),
+                                          ('regular_high', 'random_high'),
+                                          ('random_high',  'random_low')]:
+                            plot_triplet_comparison(
+                                power_dicts, subject_id, 'response', plot_dir,
+                                cond1=_c1, cond2=_c2,
+                                phase_label='Learning', block_label=group_label,
+                                trial_counts=trial_counts_map,
+                            )
                     elif cond_name == 'MotorTest':
                         plot_testing_comparison(
-                            {cond1: power_dicts[cond1],
-                             cond2: power_dicts[cond2]},
+                            power_dicts,
                             subject_id=subject_id,
                             lock_type='response',
                             test_type='motor',
                             output_dir=plot_dir,
                             block_label=group_label,
+                            trial_counts=trial_counts_map,
                         )
+                        for _c1, _c2 in [('regular_high', 'random_low'),
+                                          ('regular_high', 'random_high'),
+                                          ('random_high',  'random_low')]:
+                            plot_triplet_comparison(
+                                power_dicts, subject_id, 'response', plot_dir,
+                                cond1=_c1, cond2=_c2,
+                                phase_label='MotorTest', block_label=group_label,
+                                trial_counts=trial_counts_map,
+                            )
                     elif cond_name == 'PerceptualTest':
                         plot_testing_comparison(
-                            {cond1: power_dicts[cond1],
-                             cond2: power_dicts[cond2]},
+                            power_dicts,
                             subject_id=subject_id,
                             lock_type='response',
                             test_type='perceptual',
                             output_dir=plot_dir,
                             block_label=group_label,
+                            trial_counts=trial_counts_map,
                         )
+                        for _c1, _c2 in [('regular_high', 'random_low'),
+                                          ('regular_high', 'random_high'),
+                                          ('random_high',  'random_low')]:
+                            plot_triplet_comparison(
+                                power_dicts, subject_id, 'response', plot_dir,
+                                cond1=_c1, cond2=_c2,
+                                phase_label='PerceptualTest', block_label=group_label,
+                                trial_counts=trial_counts_map,
+                            )
 
             # ── Pooled Testing 繪圖 + Motor-Perceptual diff ──
             for _tt_val, _cn in [('motor', 'MotorTest'), ('perceptual', 'PerceptualTest')]:
                 if _tt_val not in pooled_response_results:
                     continue
                 _pd_pooled = {}
+                _tc_pooled = {}
                 for _tt, _tfr in pooled_response_results[_tt_val].items():
                     _pd_ = _tfr_to_power_dict(_tfr)
                     if _pd_:
                         _pd_pooled[_tt] = _pd_
+                        if hasattr(_tfr, 'nave') and _tfr.nave is not None:
+                            _tc_pooled[_tt] = int(_tfr.nave)
                         plot_ersp_lum2023_style(
                             _pd_,
                             f"{subject_id}_response_{_cn}_AllBlocks_{_tt}",
@@ -451,8 +491,18 @@ def response_ersp_from_current_epochs(
                 if len(_pd_pooled) >= 2:
                     plot_testing_comparison(
                         _pd_pooled, subject_id, 'response', _tt_val, plot_dir,
-                        block_label='AllBlocks'
+                        block_label='AllBlocks',
+                        trial_counts=_tc_pooled,
                     )
+                    for _c1, _c2 in [('regular_high', 'random_low'),
+                                      ('regular_high', 'random_high'),
+                                      ('random_high',  'random_low')]:
+                        plot_triplet_comparison(
+                            _pd_pooled, subject_id, 'response', plot_dir,
+                            cond1=_c1, cond2=_c2,
+                            phase_label=_cn, block_label='AllBlocks',
+                            trial_counts=_tc_pooled,
+                        )
 
             # Motor vs Perceptual diff
             if 'motor' in pooled_response_results and 'perceptual' in pooled_response_results:

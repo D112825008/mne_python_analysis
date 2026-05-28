@@ -52,7 +52,7 @@ TESTING_GROUPS  = [(27, 28), (29, 30), (31, 32), (33, 34)]
 # ============================================================
 
 def save_subject_ersp(ersp_data, subject_id, condition, phase, lock_type,
-                      freqs, times, roi_name,
+                      freqs, times, roi_name, nave=-1,
                       output_dir=r'C:\Experiment\Result\h5'):
     """
     儲存單一受試者的 ROI-averaged ERSP 資料（.pkl）。
@@ -80,6 +80,7 @@ def save_subject_ersp(ersp_data, subject_id, condition, phase, lock_type,
         'ersp'      : ersp_data,
         'freqs'     : freqs,
         'times'     : times,
+        'nave'      : nave,
         'subject_id': subject_id,
         'condition' : condition,
         'phase'     : phase,
@@ -99,10 +100,10 @@ def save_subject_ersp(ersp_data, subject_id, condition, phase, lock_type,
 # ============================================================
 
 def _load_pkl(filepath):
-    """讀取 stimulus lock 的 .pkl，回傳 (ersp_2d, freqs, times)。"""
+    """讀取 stimulus lock 的 .pkl，回傳 (ersp_2d, freqs, times, nave)。"""
     with open(filepath, 'rb') as f:
         data = pickle.load(f)
-    return data['ersp'], data['freqs'], data['times']
+    return data['ersp'], data['freqs'], data['times'], int(data.get('nave', -1))
 
 
 def _load_h5_response(filepath, roi_name):
@@ -157,7 +158,7 @@ def _load_h5_response(filepath, roi_name):
     freqs = tfr.freqs
     times = tfr.times
 
-    return power, freqs, times
+    return power, freqs, times, int(tfr.nave)
 
 
 def _find_and_load(pkl_dir, subject_id, lock_type, phase,
@@ -189,16 +190,16 @@ def _find_and_load(pkl_dir, subject_id, lock_type, phase,
         filepath = data_path / filename
         if not filepath.exists():
             # Triplet mode fallback: Regular→high, Random→low
-            alt_map  = {'Regular': 'high', 'Random': 'low', 'regular': 'high', 'random': 'low'}
+            alt_map  = {'regular_high': 'regular_high', 'random_high': 'random_high', 'random_low': 'random_low', 'Regular': 'regular_high', 'Random': 'random_low', 'regular': 'regular_high', 'random': 'random_low', 'high': 'regular_high', 'low': 'random_low'}
             alt_type = alt_map.get(trial_type)
             if alt_type:
                 alt_cond = f"{alt_type}_{group_label}"
                 alt_file = f"{subject_id}_{phase.lower()}_{lock_type}_{roi_lower}_{alt_cond}_ersp.pkl"
                 alt_path = data_path / alt_file
                 if alt_path.exists():
-                    return _load_pkl(alt_path)
+                    return _load_pkl(alt_path)   # 4-tuple (ersp, freqs, times, nave)
             raise FileNotFoundError(f"File not found: {filepath}")
-        return _load_pkl(filepath)
+        return _load_pkl(filepath)   # 4-tuple
 
     else:  # response lock
         filename = (
@@ -207,7 +208,7 @@ def _find_and_load(pkl_dir, subject_id, lock_type, phase,
         filepath = data_path / filename
         if not filepath.exists():
             raise FileNotFoundError(f"File not found: {filepath}")
-        return _load_h5_response(filepath, roi_name)
+        return _load_h5_response(filepath, roi_name)   # 4-tuple
 
 
 def _extract_block_num(filepath):
@@ -256,7 +257,7 @@ def _load_subject_testing_pair(pkl_dir, subject_id, lock_type,
 
     # Triplet fallback: Regular→high, Random→low
     if not all_files and lock_type == 'stimulus':
-        alt_map  = {'Regular': 'high', 'Random': 'low', 'regular': 'high', 'random': 'low'}
+        alt_map  = {'regular_high': 'regular_high', 'random_high': 'random_high', 'random_low': 'random_low', 'Regular': 'regular_high', 'Random': 'random_low', 'regular': 'regular_high', 'random': 'random_low', 'high': 'regular_high', 'low': 'random_low'}
         alt_type = alt_map.get(trial_type)
         if alt_type:
             alt_pattern = (
@@ -279,16 +280,18 @@ def _load_subject_testing_pair(pkl_dir, subject_id, lock_type,
         files_to_use = all_files  # fallback：block 數為奇數時後半可能為空
 
     ersp_list   = []
+    nave_list   = []
     block_names = []
     freqs = times = None
 
     for fp in files_to_use:
         try:
             if lock_type == 'stimulus':
-                ersp, f, t = _load_pkl(fp)
+                ersp, f, t, nave = _load_pkl(fp)
             else:
-                ersp, f, t = _load_h5_response(fp, roi_name)
+                ersp, f, t, nave = _load_h5_response(fp, roi_name)
             ersp_list.append(ersp)
+            nave_list.append(nave)
             block_names.append(fp.name)
             if freqs is None:
                 freqs, times = f, t
@@ -298,7 +301,7 @@ def _load_subject_testing_pair(pkl_dir, subject_id, lock_type,
     if not ersp_list:
         raise FileNotFoundError(f"pair={pair}: all blocks failed to load for {subject_id}")
 
-    return np.mean(ersp_list, axis=0), freqs, times, block_names
+    return np.mean(ersp_list, axis=0), freqs, times, block_names, nave_list
 
 
 # ============================================================
@@ -318,22 +321,24 @@ def _load_group_data(subject_ids, pkl_dir, lock_type, phase,
     loaded_ids, missing_ids : list
     """
     ersp_list  = []
+    nave_list  = []
     freqs = times = None
     loaded_ids = []
     missing_ids = []
 
     for sid in subject_ids:
         try:
-            ersp, f, t = _find_and_load(
+            ersp, f, t, nave = _find_and_load(
                 pkl_dir, sid, lock_type, phase,
                 test_type, group_label, trial_type, roi_name,
                 h5_dir=h5_dir
             )
             ersp_list.append(ersp)
+            nave_list.append(nave)
             loaded_ids.append(sid)
             if freqs is None:
                 freqs, times = f, t
-            print(f"    ✓ {sid}  shape={ersp.shape}")
+            print(f"    ✓ {sid}  shape={ersp.shape}  n_trials={nave}")
         except FileNotFoundError as e:
             print(f"    ✗ {sid}: {e}")
             missing_ids.append(sid)
@@ -342,9 +347,9 @@ def _load_group_data(subject_ids, pkl_dir, lock_type, phase,
             missing_ids.append(sid)
 
     if not ersp_list:
-        return None, None, None, [], missing_ids
+        return None, None, None, [], missing_ids, []
 
-    return np.array(ersp_list), freqs, times, loaded_ids, missing_ids
+    return np.array(ersp_list), freqs, times, loaded_ids, missing_ids, nave_list
 
 
 # ============================================================
@@ -365,18 +370,28 @@ def _load_h5_single_electrode(filepath, electrode_name):
     if elec_upper not in ch_upper:
         raise ValueError(f"電極 '{electrode_name}' 不在檔案中。可用: {tfr.ch_names}")
     idx = ch_upper.index(elec_upper)
-    return tfr.data[idx], tfr.freqs, tfr.times
+    return tfr.data[idx], tfr.freqs, tfr.times, int(tfr.nave)
 
 
 def _plot_single_electrode_comparison(arr_left, arr_right, freqs, times,
                                        common_ids, suptitle, output_path,
                                        electrode_name,
-                                       label_left='Regular', label_right='Random'):
+                                       label_left='Regular', label_right='Random',
+                                       nave_list_left=None, nave_list_right=None):
     """產生單一電極群體比較圖：left | right | Difference。"""
     n_sub      = len(common_ids)
     left_mean  = arr_left.mean(axis=0)
     right_mean = arr_right.mean(axis=0)
     diff       = left_mean - right_mean
+
+    # 建立 trial 數標注字串
+    def _nave_str(nave_list):
+        if not nave_list or all(n < 0 for n in nave_list):
+            return ""
+        valid = [n for n in nave_list if n >= 0]
+        m = int(np.mean(valid))
+        lo, hi = min(valid), max(valid)
+        return f"\n(avg {m} trials/sub, range {lo}–{hi})" if lo != hi else f"\n({m} trials/sub)"
 
     x_min, x_max = -0.5, 0.5
     t_mask = (times >= x_min) & (times <= x_max)
@@ -392,9 +407,9 @@ def _plot_single_electrode_comparison(arr_left, arr_right, freqs, times,
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     for ax, data, title, lv, vm, cb_lbl in [
-        (axes[0], left_mean,  f'{label_left}\n(N={n_sub})',                    lv_c, vmax_cond, 'Power (dB)'),
-        (axes[1], right_mean, f'{label_right}\n(N={n_sub})',                   lv_c, vmax_cond, 'Power (dB)'),
-        (axes[2], diff,       f'Difference ({label_left} - {label_right})',     lv_d, vmax_diff, 'Power Difference (dB)'),
+        (axes[0], left_mean,  f'{label_left}\n(N={n_sub}){_nave_str(nave_list_left)}',   lv_c, vmax_cond, 'Power (dB)'),
+        (axes[1], right_mean, f'{label_right}\n(N={n_sub}){_nave_str(nave_list_right)}', lv_c, vmax_cond, 'Power (dB)'),
+        (axes[2], diff,       f'Difference ({label_left} - {label_right})',               lv_d, vmax_diff, 'Power Difference (dB)'),
     ]:
         im = ax.contourf(times, freqs, data, levels=lv,
                          cmap='RdBu_r', vmin=-vm, vmax=vm, extend='both')
@@ -419,17 +434,44 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                                          h5_dir, output_dir,
                                          label_left='Regular', label_right='Random',
                                          condition_left='Regular', condition_right='Random',
-                                         stim_h5_dir=None):
+                                         stim_h5_dir=None,
+                                         _triplet_expanded=False):
     """
     對指定電極執行群體單一電極 ERSP 分析。
     同時處理 Response-locked（h5 全通道）和 Stimulus-locked（h5 全通道，需先跑 option 15）。
 
-    stim_h5_dir: Stimulus h5 目錄（triplet 模式下與 Response 目錄不同）
-    輸出目錄：output_dir/electrode_{Fz}/
+    Triplet 模式（condition_left='regular_high' 等）時，自動跑三對比較：
+      regular_high vs random_low、regular_high vs random_high、random_high vs random_low
     """
+    # Triplet 模式：自動展開為三對（只展開一次，由下方 _triplet_expanded 控制）
+
     h5_path      = Path(h5_dir)
     stim_h5_path = Path(stim_h5_dir) if stim_h5_dir else h5_path
     output_path  = Path(output_dir)
+
+    # ── Triplet 模式：自動展開為三對，遞迴呼叫（只展開一次）──
+    _TRIPLET_CONDITIONS = {'regular_high', 'random_high', 'random_low'}
+    if not _triplet_expanded and (
+        condition_left in _TRIPLET_CONDITIONS or condition_right in _TRIPLET_CONDITIONS
+    ):
+        _pairs = [
+            ('regular_high', 'random_low',  'Regular High', 'Random Low'),
+            ('regular_high', 'random_high', 'Regular High', 'Random High'),
+            ('random_high',  'random_low',  'Random High',  'Random Low'),
+        ]
+        for _cl, _cr, _ll, _lr in _pairs:
+            print(f"\n{'─'*60}")
+            print(f"  單一電極群體分析：{_ll} vs {_lr}")
+            print(f"{'─'*60}")
+            run_single_electrode_group_analysis(
+                subject_ids=subject_ids, electrodes=electrodes,
+                h5_dir=h5_dir, output_dir=output_dir,
+                label_left=_ll, label_right=_lr,
+                condition_left=_cl, condition_right=_cr,
+                stim_h5_dir=stim_h5_dir,
+                _triplet_expanded=True,
+            )
+        return
 
     for electrode in electrodes:
         print(f"\n{'='*60}")
@@ -449,6 +491,7 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                 arr_l, arr_r, ids_found = [], [], []
                 freqs = times = None
 
+                nave_l_list, nave_r_list = [], []
                 for sid in subject_ids:
                     fp_l = search_path / f'{sid}_{lock_type}_Learning_{gl}_{condition_left}_ERSP.h5'
                     fp_r = search_path / f'{sid}_{lock_type}_Learning_{gl}_{condition_right}_ERSP.h5'
@@ -456,9 +499,10 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                         print(f"    ✗ {sid} {gl}: 檔案不存在（{lock_type}）")
                         continue
                     try:
-                        el, f, t = _load_h5_single_electrode(fp_l, electrode)
-                        er, _, _ = _load_h5_single_electrode(fp_r, electrode)
+                        el, f, t, nave_l = _load_h5_single_electrode(fp_l, electrode)
+                        er, _, _, nave_r = _load_h5_single_electrode(fp_r, electrode)
                         arr_l.append(el); arr_r.append(er)
+                        nave_l_list.append(nave_l); nave_r_list.append(nave_r)
                         if freqs is None: freqs, times = f, t
                         ids_found.append(sid)
                     except Exception as e:
@@ -467,12 +511,51 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                 if not arr_l:
                     continue
 
-                suptitle = f'Learning | {gl} | {lock_type}-locked'
-                out_name = f'group_learning_{lock_type.lower()}_{electrode}_{gl}_comparison.png'
+                suptitle = f'Learning | {gl} | {lock_type}-locked | {label_left} vs {label_right}'
+                out_name = f'group_learning_{lock_type.lower()}_{electrode}_{gl}_{condition_left}_vs_{condition_right}_comparison.png'
                 _plot_single_electrode_comparison(
                     np.array(arr_l), np.array(arr_r), freqs, times,
                     ids_found, suptitle, elec_out / out_name, electrode,
-                    label_left=label_left, label_right=label_right)
+                    label_left=label_left, label_right=label_right,
+                    nave_list_left=nave_l_list, nave_list_right=nave_r_list)
+
+            # ── Epoch 4 vs Epoch 1 單一電極群體比較 ──────────────────
+            _E1_GL = 'Block7-11'
+            _E4_GL = 'Block22-26'
+            for _cond, _lbl in [(condition_left, label_left), (condition_right, label_right)]:
+                _ae1, _ae4, _ids_e = [], [], []
+                _nave_e1_l, _nave_e4_l = [], []
+                _fe = _te = None
+                for sid in subject_ids:
+                    fp_e1 = search_path / f'{sid}_{lock_type}_Learning_{_E1_GL}_{_cond}_ERSP.h5'
+                    fp_e4 = search_path / f'{sid}_{lock_type}_Learning_{_E4_GL}_{_cond}_ERSP.h5'
+                    if not fp_e1.exists() or not fp_e4.exists():
+                        continue
+                    try:
+                        e1, fe, te, nv1 = _load_h5_single_electrode(fp_e1, electrode)
+                        e4, _, _,  nv4  = _load_h5_single_electrode(fp_e4, electrode)
+                        _ae1.append(e1); _ae4.append(e4)
+                        _nave_e1_l.append(nv1); _nave_e4_l.append(nv4)
+                        if _fe is None: _fe, _te = fe, te
+                        _ids_e.append(sid)
+                    except Exception as _ex:
+                        print(f"    ✗ {sid} Epoch4vsEpoch1 {_cond}: {_ex}")
+                if not _ae1:
+                    continue
+                _suptitle_e = (
+                    f'Learning: Epoch 4 vs Epoch 1 | {_lbl} | '
+                    f'{lock_type}-locked'
+                )
+                _out_e = (
+                    f'group_learning_{lock_type.lower()}_{electrode}'
+                    f'_epoch4_vs_epoch1_{_cond}_comparison.png'
+                )
+                _plot_single_electrode_comparison(
+                    np.array(_ae4), np.array(_ae1), _fe, _te,
+                    _ids_e, _suptitle_e, elec_out / _out_e, electrode,
+                    label_left=f'Epoch 4 ({_E4_GL})\n{_lbl}',
+                    label_right=f'Epoch 1 ({_E1_GL})\n{_lbl}',
+                    nave_list_left=_nave_e4_l, nave_list_right=_nave_e1_l)
 
             # ── Testing ──
             for test_type in ('motor', 'perceptual'):
@@ -497,25 +580,30 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
 
                 for pair_key, pair_desc in pair_labels.items():
                     arr_l, arr_r, ids_found = [], [], []
+                    nave_list_l, nave_list_r = [], []
                     freqs = times = None
 
                     for sid in subject_ids:
                         if sid not in sub_blocks or not sub_blocks[sid].get(pair_key):
                             continue
                         try:
-                            els, ers = [], []
+                            els, ers, nls, nrs = [], [], [], []
                             for fp_l in sub_blocks[sid][pair_key]:
                                 fp_r = Path(str(fp_l).replace(
                                     f'_{condition_left}_', f'_{condition_right}_'))
                                 if not fp_r.exists():
                                     continue
-                                el, f, t = _load_h5_single_electrode(fp_l, electrode)
-                                er, _, _ = _load_h5_single_electrode(fp_r, electrode)
+                                el, f, t, nave_l = _load_h5_single_electrode(fp_l, electrode)
+                                er, _, _, nave_r = _load_h5_single_electrode(fp_r, electrode)
                                 els.append(el); ers.append(er)
+                                nls.append(nave_l); nrs.append(nave_r)
                                 if freqs is None: freqs, times = f, t
                             if els and ers:
                                 arr_l.append(np.mean(els, axis=0))
                                 arr_r.append(np.mean(ers, axis=0))
+                                # 跨 block 加總 nave（同一受試者多個 block 的 trial 數加總）
+                                nave_list_l.append(sum(n for n in nls if n >= 0))
+                                nave_list_r.append(sum(n for n in nrs if n >= 0))
                                 ids_found.append(sid)
                         except Exception as e:
                             print(f"    ✗ {sid}: {e}")
@@ -523,12 +611,13 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                     if not arr_l:
                         continue
 
-                    suptitle = f'Testing | {test_type.capitalize()} | {pair_desc} | {lock_type}-locked'
-                    out_name = f'group_testing_{lock_type.lower()}_{electrode}_{test_type}_{pair_key}_comparison.png'
+                    suptitle = f'Testing | {test_type.capitalize()} | {pair_desc} | {lock_type}-locked | {label_left} vs {label_right}'
+                    out_name = f'group_testing_{lock_type.lower()}_{electrode}_{test_type}_{pair_key}_{condition_left}_vs_{condition_right}_comparison.png'
                     _plot_single_electrode_comparison(
                         np.array(arr_l), np.array(arr_r), freqs, times,
                         ids_found, suptitle, elec_out / out_name, electrode,
-                        label_left=label_left, label_right=label_right)
+                        label_left=label_left, label_right=label_right,
+                        nave_list_left=nave_list_l, nave_list_right=nave_list_r)
 
                 # ── 各別 Block 群體圖 ──
                 all_block_labels = set()
@@ -540,6 +629,7 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
 
                 for blk_label in all_block_labels:
                     arr_l, arr_r, ids_found = [], [], []
+                    nave_list_l, nave_list_r = [], []
                     freqs = times = None
                     for sid in subject_ids:
                         fp_l = h5_path / f'{sid}_{lock_type}_{cond_name}_{blk_label}_{condition_left}_ERSP.h5'
@@ -547,27 +637,30 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                         if not fp_l.exists() or not fp_r.exists():
                             continue
                         try:
-                            el, f, t = _load_h5_single_electrode(fp_l, electrode)
-                            er, _, _ = _load_h5_single_electrode(fp_r, electrode)
+                            el, f, t, nave_l = _load_h5_single_electrode(fp_l, electrode)
+                            er, _, _, nave_r = _load_h5_single_electrode(fp_r, electrode)
                             arr_l.append(el); arr_r.append(er)
+                            nave_list_l.append(nave_l); nave_list_r.append(nave_r)
                             if freqs is None: freqs, times = f, t
                             ids_found.append(sid)
                         except Exception as e:
                             print(f"    ✗ {sid} {blk_label}: {e}")
                     if not arr_l:
                         continue
-                    suptitle = f'Testing | {test_type.capitalize()} | {blk_label} | {lock_type}-locked'
-                    out_name = f'group_testing_{lock_type.lower()}_{electrode}_{test_type}_{blk_label}_comparison.png'
+                    suptitle = f'Testing | {test_type.capitalize()} | {blk_label} | {lock_type}-locked | {label_left} vs {label_right}'
+                    out_name = f'group_testing_{lock_type.lower()}_{electrode}_{test_type}_{blk_label}_{condition_left}_vs_{condition_right}_comparison.png'
                     _plot_single_electrode_comparison(
                         np.array(arr_l), np.array(arr_r), freqs, times,
                         ids_found, suptitle, elec_out / out_name, electrode,
-                        label_left=label_left, label_right=label_right)
+                        label_left=label_left, label_right=label_right,
+                        nave_list_left=nave_list_l, nave_list_right=nave_list_r)
 
             # ── Pooled Testing (AllBlocks) 單一電極 ──
             for _test_type in ('motor', 'perceptual'):
                 _cond_name = 'MotorTest' if _test_type == 'motor' else 'PerceptualTest'
 
                 arr_l, arr_r, ids_found = [], [], []
+                nave_list_l, nave_list_r = [], []
                 freqs = times = None
 
                 for sid in subject_ids:
@@ -580,9 +673,10 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                         print(f"    ✗ {sid} {_cond_name} AllBlocks: 檔案不存在（{lock_type}）")
                         continue
                     try:
-                        el, f, t = _load_h5_single_electrode(fp_l, electrode)
-                        er, _, _ = _load_h5_single_electrode(fp_r, electrode)
+                        el, f, t, nave_l = _load_h5_single_electrode(fp_l, electrode)
+                        er, _, _, nave_r = _load_h5_single_electrode(fp_r, electrode)
                         arr_l.append(el); arr_r.append(er)
+                        nave_list_l.append(nave_l); nave_list_r.append(nave_r)
                         if freqs is None: freqs, times = f, t
                         ids_found.append(sid)
                         print(f"    ✓ {sid} {_cond_name} AllBlocks 讀取成功")
@@ -592,12 +686,13 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                 if not arr_l:
                     continue
 
-                suptitle = f'Testing Pooled | {_test_type.capitalize()} | AllBlocks | {lock_type}-locked'
-                out_name = f'group_pooled_{lock_type.lower()}_{electrode}_{_test_type}_comparison.png'
+                suptitle = f'Testing Pooled | {_test_type.capitalize()} | AllBlocks | {lock_type}-locked | {label_left} vs {label_right}'
+                out_name = f'group_pooled_{lock_type.lower()}_{electrode}_{_test_type}_{condition_left}_vs_{condition_right}_comparison.png'
                 _plot_single_electrode_comparison(
                     np.array(arr_l), np.array(arr_r), freqs, times,
                     ids_found, suptitle, elec_out / out_name, electrode,
-                    label_left=label_left, label_right=label_right)
+                    label_left=label_left, label_right=label_right,
+                    nave_list_left=nave_list_l, nave_list_right=nave_list_r)
 
             # ── Motor-Perceptual Diff 單一電極 ──
             _motor_reg, _motor_ran = {}, {}
@@ -611,10 +706,10 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                     fp_l = search_path / f'{sid}_{lock_type}_{_cn}_AllBlocks_{condition_left}_ERSP.h5'
                     fp_r = search_path / f'{sid}_{lock_type}_{_cn}_AllBlocks_{condition_right}_ERSP.h5'
                     if fp_l.exists():
-                        try: _store_l[sid], _, _ = _load_h5_single_electrode(fp_l, electrode)
+                        try: _store_l[sid], _, _, _ = _load_h5_single_electrode(fp_l, electrode)
                         except Exception: pass
                     if fp_r.exists():
-                        try: _store_r[sid], _, _ = _load_h5_single_electrode(fp_r, electrode)
+                        try: _store_r[sid], _, _, _ = _load_h5_single_electrode(fp_r, electrode)
                         except Exception: pass
 
             _common_mp = [s for s in subject_ids
@@ -624,12 +719,12 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                 _fp_ref = search_path / f'{_common_mp[0]}_{lock_type}_MotorTest_AllBlocks_{condition_left}_ERSP.h5'
                 _freqs_mp = _times_mp = None
                 if _fp_ref.exists():
-                    try: _, _freqs_mp, _times_mp = _load_h5_single_electrode(_fp_ref, electrode)
+                    try: _, _freqs_mp, _times_mp, _ = _load_h5_single_electrode(_fp_ref, electrode)
                     except Exception: pass
                 if _freqs_mp is not None:
                     _arr_reg_diff = np.array([_motor_reg[s] - _percept_reg[s] for s in _common_mp])
                     _arr_ran_diff = np.array([_motor_ran[s] - _percept_ran[s] for s in _common_mp])
-                    _mp_out = elec_out / f'group_motor_perceptual_diff_{lock_type.lower()}_{electrode}.png'
+                    _mp_out = elec_out / f'group_motor_perceptual_diff_{lock_type.lower()}_{electrode}_{condition_left}_vs_{condition_right}.png'
                     _suptitle_mp = f'Motor-Perceptual Diff | {lock_type}-locked | Electrode: {electrode}'
                     _n = len(_common_mp)
                     _reg_m = _arr_reg_diff.mean(axis=0)
@@ -741,7 +836,8 @@ def _plot_group_block(arr_reg, arr_ran, freqs, times,
                       common_ids, suptitle, output_path,
                       do_permutation, n_permutations, lock_type='response',
                       vmax_cond=None, vmax_diff=None,
-                      label_left='Regular', label_right='Random'):
+                      label_left='Regular', label_right='Random',
+                      nave_list_left=None, nave_list_right=None):
     """
     產生單一 Block 組的群體比較圖：
       [Regular grand avg | Random grand avg | Difference (+ cluster outline)]
@@ -754,6 +850,18 @@ def _plot_group_block(arr_reg, arr_ran, freqs, times,
     reg_mean = arr_reg.mean(axis=0)
     ran_mean = arr_ran.mean(axis=0)
     diff     = reg_mean - ran_mean   # Regular - Random
+
+    # ── 建立 trial 數標注字串 ──
+    def _nave_str(nave_list):
+        if not nave_list or all(n < 0 for n in nave_list):
+            return ""
+        valid = [n for n in nave_list if n >= 0]
+        m = int(np.mean(valid))
+        lo, hi = min(valid), max(valid)
+        return f"\n(avg {m} trials/sub, range {lo}–{hi})" if lo != hi else f"\n({m} trials/sub)"
+
+    label_left_full  = f'{label_left}\n(N={n_sub}){_nave_str(nave_list_left)}'
+    label_right_full = f'{label_right}\n(N={n_sub}){_nave_str(nave_list_right)}'
 
     # ── xlim ──
     x_min, x_max = -0.5, 0.5
@@ -805,12 +913,12 @@ def _plot_group_block(arr_reg, arr_ran, freqs, times,
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
     im1 = _draw_ersp_panel(axes[0], reg_mean, freqs, times,
-                           f'{label_left}\n(N={n_sub})', vmin_cond, vmax_cond,
+                           label_left_full, vmin_cond, vmax_cond,
                            x_min=x_min, x_max=x_max)
     plt.colorbar(im1, ax=axes[0], label='Power (dB)')
 
     im2 = _draw_ersp_panel(axes[1], ran_mean, freqs, times,
-                           f'{label_right}\n(N={n_sub})', vmin_cond, vmax_cond,
+                           label_right_full, vmin_cond, vmax_cond,
                            x_min=x_min, x_max=x_max)
     plt.colorbar(im2, ax=axes[1], label='Power (dB)')
 
@@ -876,6 +984,20 @@ def group_ersp_analysis(subject_ids,
     -------
     dict
     """
+    # ── 自動轉換 display label ──
+    _DISP = {
+        'regular_high': 'Regular High',
+        'random_high':  'Random High',
+        'random_low':   'Random Low',
+        'Regular':      'Regular',
+        'Random':       'Random',
+        'high':         'High',
+        'low':          'Low',
+    }
+    if display_label1 is None:
+        display_label1 = _DISP.get(condition1, condition1)
+    if display_label2 is None:
+        display_label2 = _DISP.get(condition2, condition2)
     # 向後相容：舊的 data_dir 參數若有傳入，同時當作 pkl_dir 和 h5_dir
     if data_dir is not None:
         pkl_dir = data_dir
@@ -915,8 +1037,8 @@ def group_ersp_analysis(subject_ids,
             _gvc, _gvd = 0.0, 0.0
             for (_bs, _be) in LEARNING_GROUPS:
                 _gl = f"Block{_bs}-{_be}"
-                _a1, _, _t, _i1, _ = _load_group_data(subject_ids, pkl_dir, lock_type, phase, None, _gl, condition1, roi_lower, h5_dir=h5_dir)
-                _a2, _, _, _i2, _ = _load_group_data(subject_ids, pkl_dir, lock_type, phase, None, _gl, condition2, roi_lower, h5_dir=h5_dir)
+                _a1, _, _t, _i1, _, _nv1 = _load_group_data(subject_ids, pkl_dir, lock_type, phase, None, _gl, condition1, roi_lower, h5_dir=h5_dir)
+                _a2, _, _, _i2, _, _nv2  = _load_group_data(subject_ids, pkl_dir, lock_type, phase, None, _gl, condition2, roi_lower, h5_dir=h5_dir)
                 if _a1 is None or _a2 is None:
                     continue
                 _c = [s for s in _i1 if s in _i2]
@@ -931,7 +1053,10 @@ def group_ersp_analysis(subject_ids,
                 _gvd = max(_gvd, np.percentile(np.abs(_d[:, _tm].ravel()), 95))
             global_vmax_cond = _gvc if _gvc > 0 else None
             global_vmax_diff = _gvd if _gvd > 0 else None
-            print(f"  統一 colorbar: vmax_cond={global_vmax_cond:.4f} dB, vmax_diff={global_vmax_diff:.4f} dB")
+            if global_vmax_cond is not None and global_vmax_diff is not None:
+                print(f"  統一 colorbar: vmax_cond={global_vmax_cond:.4f} dB, vmax_diff={global_vmax_diff:.4f} dB")
+            else:
+                print("  統一 colorbar: 無有效資料，跳過")
 
         for (blk_start, blk_end) in LEARNING_GROUPS:
             group_label = f"Block{blk_start}-{blk_end}"
@@ -941,14 +1066,14 @@ def group_ersp_analysis(subject_ids,
             print(f"{'─'*60}")
 
             print(f"\n  Loading {condition1}...")
-            arr1, freqs, times, ids1, _ = _load_group_data(
+            arr1, freqs, times, ids1, _, nave1 = _load_group_data(
                 subject_ids, pkl_dir, lock_type, phase,
                 None, group_label, condition1, roi_lower,
                 h5_dir=h5_dir
             )
 
             print(f"\n  Loading {condition2}...")
-            arr2, _, _, ids2, _ = _load_group_data(
+            arr2, _, _, ids2, _, nave2 = _load_group_data(
                 subject_ids, pkl_dir, lock_type, phase,
                 None, group_label, condition2, roi_lower,
                 h5_dir=h5_dir
@@ -966,6 +1091,9 @@ def group_ersp_analysis(subject_ids,
             if len(common_ids) < len(ids1):
                 arr1 = arr1[[ids1.index(s) for s in common_ids]]
                 arr2 = arr2[[ids2.index(s) for s in common_ids]]
+            # 對齊 nave 到 common_ids
+            nave1_common = [nave1[ids1.index(s)] for s in common_ids]
+            nave2_common = [nave2[ids2.index(s)] for s in common_ids]
 
             print(f"\n  Common subjects: {len(common_ids)}")
 
@@ -977,19 +1105,77 @@ def group_ersp_analysis(subject_ids,
                 f"group_learning_{lock_type}_{roi_lower}_{group_label}_comparison.png"
             )
             block_result = _plot_group_block(
-                arr2, arr1, freqs, times,
+                arr1, arr2, freqs, times,
                 common_ids, suptitle, output_path / out_name,
                 do_permutation_test, n_permutations, lock_type=lock_type,
                 vmax_cond=global_vmax_cond,
                 vmax_diff=global_vmax_diff,
-                label_left=display_label2 or condition2,
-                label_right=display_label1 or condition1,
+                label_left=display_label1 or condition1,
+                label_right=display_label2 or condition2,
+                nave_list_left=nave1_common,
+                nave_list_right=nave2_common,
             )
             all_results[group_label] = {
                 **block_result,
                 'subject_ids': common_ids,
                 'freqs': freqs, 'times': times,
             }
+
+        # ── Epoch 4 vs Epoch 1 群體比較（Block22-26 vs Block7-11）──────
+        _E1_LABEL = 'Block7-11'
+        _E4_LABEL = 'Block22-26'
+        _EPOCH_DISP = {
+            'regular_high': 'Regular High', 'random_high': 'Random High',
+            'random_low':   'Random Low',   'Regular':     'Regular',
+            'Random':       'Random',       'high':        'High',
+            'low':          'Low',
+        }
+        print(f"\n{'─'*60}")
+        print(f"  Group Learning: Epoch 4 vs Epoch 1")
+        print(f"{'─'*60}")
+        for _cond in [condition1, condition2]:
+            try:
+                _disp = _EPOCH_DISP.get(_cond, _cond)
+                print(f"\n  Loading Epoch1 ({_E1_LABEL}) – {_cond}...")
+                arr_e1, freqs_e, times_e, ids_e1, _, nave_e1 = _load_group_data(
+                    subject_ids, pkl_dir, lock_type, phase,
+                    None, _E1_LABEL, _cond, roi_lower, h5_dir=h5_dir)
+                print(f"  Loading Epoch4 ({_E4_LABEL}) – {_cond}...")
+                arr_e4, _, _, ids_e4, _, nave_e4 = _load_group_data(
+                    subject_ids, pkl_dir, lock_type, phase,
+                    None, _E4_LABEL, _cond, roi_lower, h5_dir=h5_dir)
+                if arr_e1 is None or arr_e4 is None:
+                    print(f"  ⚠ {_cond}: Epoch1 或 Epoch4 資料不足，跳過")
+                    continue
+                common_e = [s for s in ids_e1 if s in ids_e4]
+                if not common_e:
+                    print(f"  ⚠ {_cond}: 無共同受試者，跳過")
+                    continue
+                arr_e1 = arr_e1[[ids_e1.index(s) for s in common_e]]
+                arr_e4 = arr_e4[[ids_e4.index(s) for s in common_e]]
+                nave_e1_c = [nave_e1[ids_e1.index(s)] for s in common_e]
+                nave_e4_c = [nave_e4[ids_e4.index(s)] for s in common_e]
+                suptitle_e = (
+                    f"Learning: Epoch 4 vs Epoch 1 | {_disp} | "
+                    f"{lock_type.capitalize()}-locked | {roi_cap} ROI"
+                )
+                out_name_e = (
+                    f"group_learning_{lock_type}_{roi_lower}"
+                    f"_epoch4_vs_epoch1_{_cond}_comparison.png"
+                )
+                _plot_group_block(
+                    arr_e4, arr_e1, freqs_e, times_e,
+                    common_e, suptitle_e, output_path / out_name_e,
+                    do_permutation_test, n_permutations, lock_type=lock_type,
+                    label_left=f'Epoch 4 ({_E4_LABEL})\n{_disp}',
+                    label_right=f'Epoch 1 ({_E1_LABEL})\n{_disp}',
+                    nave_list_left=nave_e4_c,
+                    nave_list_right=nave_e1_c,
+                )
+                all_results[f'epoch4_vs_epoch1_{_cond}'] = {'freqs': freqs_e, 'times': times_e}
+            except Exception as _e4e:
+                print(f"  ✗ Epoch4 vs Epoch1 {_cond}: {_e4e}")
+                import traceback; traceback.print_exc()
 
     # ============================================================
     # Testing：反平衡設計，按「第一對 block / 第二對 block」分兩張圖
@@ -1014,7 +1200,7 @@ def group_ersp_analysis(subject_ids,
                 _el1, _el2, _times = [], [], None
                 for sid in subject_ids:
                     try:
-                        _e1, _f, _t, _ = _load_subject_testing_pair(
+                        _e1, _f, _t, _, _ = _load_subject_testing_pair(
                             pkl_dir, sid, lock_type, test_type, condition1, roi_lower,
                             pair=_pair, h5_dir=h5_dir)
                         _el1.append(_e1)
@@ -1023,7 +1209,7 @@ def group_ersp_analysis(subject_ids,
                     except Exception:
                         pass
                     try:
-                        _e2, _f, _t, _ = _load_subject_testing_pair(
+                        _e2, _f, _t, _, _ = _load_subject_testing_pair(
                             pkl_dir, sid, lock_type, test_type, condition2, roi_lower,
                             pair=_pair, h5_dir=h5_dir)
                         _el2.append(_e2)
@@ -1041,8 +1227,14 @@ def group_ersp_analysis(subject_ids,
                 _gvd = max(_gvd, np.percentile(np.abs(_d[:, _tm].ravel()), 95))
             global_vmax_cond = _gvc if _gvc > 0 else None
             global_vmax_diff = _gvd if _gvd > 0 else None
-            print(f"  統一 colorbar: vmax_cond={global_vmax_cond:.4f} dB, vmax_diff={global_vmax_diff:.4f} dB")
-
+            if global_vmax_cond is not None and global_vmax_diff is not None:
+                print(f"  統一 colorbar: vmax_cond={global_vmax_cond:.4f} dB, vmax_diff={global_vmax_diff:.4f} dB")
+            else:
+                print("  統一 colorbar: 無有效資料，跳過")
+            if global_vmax_cond is not None and global_vmax_diff is not None:
+                print(f"  統一 colorbar: vmax_cond={global_vmax_cond:.4f} dB, vmax_diff={global_vmax_diff:.4f} dB")
+            else:
+                print("  統一 colorbar: 無有效資料，跳過")
         for pair_key, pair_desc in pair_labels.items():
 
             print(f"\n{'─'*60}")
@@ -1054,9 +1246,10 @@ def group_ersp_analysis(subject_ids,
                 freqs = times = None
                 loaded_ids = []
                 sub_block_info = {}
+                nave_list = []
                 for sid in subject_ids:
                     try:
-                        ersp, f, t, blk_names = _load_subject_testing_pair(
+                        ersp, f, t, blk_names, sub_nave = _load_subject_testing_pair(
                             pkl_dir, sid, lock_type,
                             test_type, trial_type, roi_lower,
                             pair=_pair, h5_dir=h5_dir
@@ -1064,22 +1257,26 @@ def group_ersp_analysis(subject_ids,
                         ersp_list.append(ersp)
                         loaded_ids.append(sid)
                         sub_block_info[sid] = blk_names
+                        # 평균 nave（若同一受試者有多個 block，取平均代表）
+                        valid_nave = [n for n in sub_nave if n >= 0]
+                        nave_list.append(int(np.mean(valid_nave)) if valid_nave else -1)
                         if freqs is None:
                             freqs, times = f, t
-                        print(f"    ✓ {sid}  blocks={[b for b in blk_names]}  shape={ersp.shape}")
+                        _sub_nave = int(np.mean(valid_nave)) if valid_nave else -1
+                        print(f"    ✓ {sid}  blocks={[b for b in blk_names]}  shape={ersp.shape}  n_trials={_sub_nave}")
                     except FileNotFoundError as e:
                         print(f"    ✗ {sid}: {e}")
                     except Exception as e:
                         print(f"    ✗ {sid}: load failed ({e})")
                 if not ersp_list:
-                    return None, None, None, [], {}
-                return np.array(ersp_list), freqs, times, loaded_ids, sub_block_info
+                    return None, None, None, [], {}, []
+                return np.array(ersp_list), freqs, times, loaded_ids, sub_block_info, nave_list
 
             print(f"\n  Loading {condition1}...")
-            arr1, freqs, times, ids1, info1 = _load_pair(condition1)
+            arr1, freqs, times, ids1, info1, nave1 = _load_pair(condition1)
 
             print(f"\n  Loading {condition2}...")
-            arr2, _, _, ids2, info2 = _load_pair(condition2)
+            arr2, _, _, ids2, info2, nave2 = _load_pair(condition2)
 
             if arr1 is None or arr2 is None:
                 print(f"  ⚠  {pair_desc}: insufficient data, skipped")
@@ -1093,6 +1290,8 @@ def group_ersp_analysis(subject_ids,
             if len(common_ids) < len(ids1):
                 arr1 = arr1[[ids1.index(s) for s in common_ids]]
                 arr2 = arr2[[ids2.index(s) for s in common_ids]]
+            nave1_common = [nave1[ids1.index(s)] for s in common_ids]
+            nave2_common = [nave2[ids2.index(s)] for s in common_ids]
 
             print(f"\n  Common subjects: {len(common_ids)}")
 
@@ -1104,13 +1303,15 @@ def group_ersp_analysis(subject_ids,
                 f"group_testing_{lock_type}_{roi_lower}_{test_type}_{pair_key}_comparison.png"
             )
             block_result = _plot_group_block(
-                arr2, arr1, freqs, times,
+                arr1, arr2, freqs, times,
                 common_ids, suptitle, output_path / out_name,
                 do_permutation_test, n_permutations, lock_type=lock_type,
                 vmax_cond=global_vmax_cond,
                 vmax_diff=global_vmax_diff,
-                label_left=display_label2 or condition2,
-                label_right=display_label1 or condition1,
+                label_left=display_label1 or condition1,
+                label_right=display_label2 or condition2,
+                nave_list_left=nave1_common,
+                nave_list_right=nave2_common,
             )
             all_results[pair_key] = {
                 **block_result,
@@ -1125,6 +1326,8 @@ def group_ersp_analysis(subject_ids,
     print(f"\n{'='*70}")
     print(f"✓ Group analysis complete! {len(all_results)} unit(s) processed")
     for gl, res in all_results.items():
+        if 'subject_ids' not in res:
+            continue
         n_sig = res.get('n_sig_clusters', 0)
         print(f"  {gl}: N={len(res['subject_ids'])}  sig. clusters={n_sig}")
     print(f"✓ Results saved to: {output_path}")
@@ -1183,27 +1386,42 @@ def auto_group_ersp_analysis(subject_ids,
     sample_files = _glob.glob(os.path.join(h5_dir, f'{subject_ids[0]}_Response_*.h5'))
     for f in sample_files:
         parts = os.path.basename(f).replace('_ERSP.h5', '').split('_')
-        tt = parts[-1]
+        # triplet 名稱是 random_high / random_low / regular_high（兩段），一般是 high / low（一段）
+        if len(parts) >= 2 and parts[-2] in ('random', 'regular'):
+            tt = f"{parts[-2]}_{parts[-1]}"
+        else:
+            tt = parts[-1]
         if tt not in detected_types:
             detected_types.append(tt)
-    if len(detected_types) >= 2:
+
+    # Triplet 模式偵測：若含 regular_high / random_high / random_low，展開為三對
+    _TRIPLET_SET = {'regular_high', 'random_high', 'random_low'}
+    if _TRIPLET_SET.issubset(set(detected_types)):
+        condition_pairs = [
+            ('regular_high', 'random_low'),
+            ('regular_high', 'random_high'),
+            ('random_high',  'random_low'),
+        ]
+    elif len(detected_types) >= 2:
         if detected_types[0] in ('Regular', 'high'):
-            condition1, condition2 = detected_types[1], detected_types[0]
+            condition_pairs = [(detected_types[1], detected_types[0])]
         else:
-            condition1, condition2 = detected_types[0], detected_types[1]
+            condition_pairs = [(detected_types[0], detected_types[1])]
     else:
-        condition1, condition2 = 'Random', 'Regular'  # fallback
+        condition_pairs = [('Random', 'Regular')]  # fallback
+
+    condition1, condition2 = condition_pairs[0]  # 向後相容顯示用
 
     print("\n" + "=" * 70)
     print("Group ERSP Auto Analysis  v2.0")
     print("=" * 70)
     print(f"Subjects (N={len(subject_ids)}): {subject_ids}")
-    print(f"Conditions detected: {condition1} vs {condition2}")
+    print(f"Condition pairs: {condition_pairs}")
     print(f"Data source (stim/pkl): {pkl_dir}")
     print(f"Data source (resp/h5):  {h5_dir}")
     print(f"Output root: {output_dir}")
     print(f"Permutation Test: {'Yes' if do_permutation_test else 'No'}")
-    print(f"Total {total} combinations")
+    print(f"Total {total} combinations × {len(condition_pairs)} pairs")
     print("=" * 70)
 
     all_combo_results = {}
@@ -1224,36 +1442,39 @@ def auto_group_ersp_analysis(subject_ids,
         print(f"  [{i}/{total}]  {key}")
         print(f"{'#'*70}")
 
-        try:
-            result = group_ersp_analysis(
-                subject_ids         = subject_ids,
-                condition1          = condition1,
-                condition2          = condition2,
-                phase               = phase,
-                lock_type           = lock_type,
-                roi_name            = roi_name,
-                pkl_dir             = pkl_dir,
-                h5_dir              = h5_dir,
-                output_dir          = sub_dir,
-                do_permutation_test = do_permutation_test,
-                n_permutations      = n_permutations,
-                test_type           = test_type,
-                unified_colorbar    = unified_colorbar,
-                display_label1      = display_label1,
-                display_label2      = display_label2,
-            )
-            all_combo_results[key] = result
-            n_blocks = len(result)
-            if n_blocks > 0:
-                done += 1
-                print(f"  ✓ [{i}/{total}] {key}: {n_blocks} block group(s) done")
-            else:
+        for _c1, _c2 in condition_pairs:
+            _pair_label = f"{_c1}_vs_{_c2}"
+            _sub_dir_pair = str(Path(sub_dir) / _pair_label)
+            try:
+                result = group_ersp_analysis(
+                    subject_ids         = subject_ids,
+                    condition1          = _c1,
+                    condition2          = _c2,
+                    phase               = phase,
+                    lock_type           = lock_type,
+                    roi_name            = roi_name,
+                    pkl_dir             = pkl_dir,
+                    h5_dir              = h5_dir,
+                    output_dir          = _sub_dir_pair,
+                    do_permutation_test = do_permutation_test,
+                    n_permutations      = n_permutations,
+                    test_type           = test_type,
+                    unified_colorbar    = unified_colorbar,
+                    display_label1      = display_label1,
+                    display_label2      = display_label2,
+                )
+                all_combo_results[f"{key}_{_pair_label}"] = result
+                n_blocks = len(result)
+                if n_blocks > 0:
+                    done += 1
+                    print(f"  ✓ [{i}/{total}] {key} | {_pair_label}: {n_blocks} block group(s) done")
+                else:
+                    skipped += 1
+                    print(f"  ⚠  [{i}/{total}] {key} | {_pair_label}: no valid data")
+            except Exception as e:
                 skipped += 1
-                print(f"  ⚠  [{i}/{total}] {key}: no valid data (pkl/h5 not yet generated?)")
-        except Exception as e:
-            skipped += 1
-            print(f"  ✗ [{i}/{total}] {key}: error → {e}")
-            import traceback; traceback.print_exc()
+                print(f"  ✗ [{i}/{total}] {key} | {_pair_label}: error → {e}")
+                import traceback; traceback.print_exc()
 
     print(f"\n{'='*70}")
     print(f"✓ Auto group analysis complete")
@@ -1274,116 +1495,257 @@ def auto_group_ersp_analysis(subject_ids,
             roi_cap   = roi_name.capitalize()
 
             # ── Pooled Motor / Pooled Perceptual ──
-            for test_type in ['motor', 'perceptual']:
-                cond_name = 'MotorTest' if test_type == 'motor' else 'PerceptualTest'
-                lock_cap  = lock_type.capitalize()
+            for condition1, condition2 in condition_pairs:
+                display_label1 = condition1
+                display_label2 = condition2
+                for test_type in ['motor', 'perceptual']:
+                    cond_name = 'MotorTest' if test_type == 'motor' else 'PerceptualTest'
+                    lock_cap  = lock_type.capitalize()
 
-                # stimulus-locked AllBlocks 存在 pkl_dir（stim h5 目錄），
-                # response-locked AllBlocks 存在 h5_dir（triplet h5 目錄）
-                _allblocks_dir = Path(pkl_dir) if lock_type == 'stimulus' else Path(h5_dir)
+                    # stimulus-locked AllBlocks 存在 pkl_dir（stim h5 目錄），
+                    # response-locked AllBlocks 存在 h5_dir（triplet h5 目錄）
+                    _allblocks_dir = Path(pkl_dir) if lock_type == 'stimulus' else Path(h5_dir)
 
-                arr_left_list, arr_right_list, ids_found = [], [], []
-                freqs_p = times_p = None
+                    arr_left_list, arr_right_list, ids_found = [], [], []
+                    nave_left_list, nave_right_list = [], []
+                    freqs_p = times_p = None
 
-                for sid in subject_ids:
-                    fp_l = _allblocks_dir / f'{sid}_{lock_cap}_{cond_name}_AllBlocks_{condition2}_ERSP.h5'
-                    fp_r = _allblocks_dir / f'{sid}_{lock_cap}_{cond_name}_AllBlocks_{condition1}_ERSP.h5'
-                    if not fp_l.exists() or not fp_r.exists():
+                    for sid in subject_ids:
+                        fp_l = _allblocks_dir / f'{sid}_{lock_cap}_{cond_name}_AllBlocks_{condition1}_ERSP.h5'
+                        fp_r = _allblocks_dir / f'{sid}_{lock_cap}_{cond_name}_AllBlocks_{condition2}_ERSP.h5'
+                        if not fp_l.exists() or not fp_r.exists():
+                            continue
+                        try:
+                            el, f, t, _nave_l = _load_h5_response(fp_l, roi_name)
+                            er, _, _, _nave_r = _load_h5_response(fp_r, roi_name)
+                            arr_left_list.append(el); arr_right_list.append(er)
+                            nave_left_list.append(_nave_l); nave_right_list.append(_nave_r)
+                            if freqs_p is None: freqs_p, times_p = f, t
+                            ids_found.append(sid)
+                            print(f"    ✓ {sid} {test_type} AllBlocks  n_trials_left={_nave_l}  n_trials_right={_nave_r}")
+                        except Exception as _e:
+                            print(f"    ✗ {sid} {test_type} AllBlocks: {_e}")
+
+                    if len(arr_left_list) == 0:
                         continue
-                    try:
-                        el, f, t = _load_h5_response(fp_l, roi_name)
-                        er, _, _ = _load_h5_response(fp_r, roi_name)
-                        arr_left_list.append(el); arr_right_list.append(er)
-                        if freqs_p is None: freqs_p, times_p = f, t
-                        ids_found.append(sid)
-                    except Exception as _e:
-                        print(f"    ✗ {sid} {test_type} AllBlocks: {_e}")
 
-                if len(arr_left_list) == 0:
+                    arr_l = np.array(arr_left_list)
+                    arr_r = np.array(arr_right_list)
+                    common = ids_found
+                    sub_dir_p = str(Path(output_dir) / f'testing_pooled_{test_type}_{lock_type}_{roi_lower}')
+                    Path(sub_dir_p).mkdir(parents=True, exist_ok=True)
+                    suptitle_p = (
+                        f'Testing Pooled | {test_type.capitalize()} | AllBlocks | '
+                        f'{lock_cap}-locked | {roi_cap} ROI'
+                    )
+                    out_name_p = f'group_pooled_{test_type}_{lock_type}_{roi_lower}_{condition1}_vs_{condition2}_comparison.png'
+                    _plot_group_block(
+                        arr_l, arr_r, freqs_p, times_p,
+                        common, suptitle_p, Path(sub_dir_p) / out_name_p,
+                        False, 1000, lock_type=lock_type,
+                        label_left=display_label1 or condition1,
+                        label_right=display_label2 or condition2,
+                        nave_list_left=nave_left_list,
+                        nave_list_right=nave_right_list,
+                    )
+
+                # ── Motor-Perceptual Diff（三對）──
+                lock_cap = lock_type.capitalize()
+                _allblocks_dir_mp = Path(pkl_dir) if lock_type == 'stimulus' else Path(h5_dir)
+
+                for _c1, _c2 in condition_pairs:
+                    motor_reg, motor_ran = {}, {}
+                    percept_reg, percept_ran = {}, {}
+
+                    for sid in subject_ids:
+                        for cond, store_reg, store_ran in [
+                            ('MotorTest', motor_reg, motor_ran),
+                            ('PerceptualTest', percept_reg, percept_ran),
+                        ]:
+                            fp_l = _allblocks_dir_mp / f'{sid}_{lock_cap}_{cond}_AllBlocks_{_c1}_ERSP.h5'
+                            fp_r = _allblocks_dir_mp / f'{sid}_{lock_cap}_{cond}_AllBlocks_{_c2}_ERSP.h5'
+                            if fp_l.exists():
+                                try:
+                                    store_reg[sid], _, _, _ = _load_h5_response(fp_l, roi_name)
+                                except Exception:
+                                    pass
+                            if fp_r.exists():
+                                try:
+                                    store_ran[sid], _, _, _ = _load_h5_response(fp_r, roi_name)
+                                except Exception:
+                                    pass
+
+                    common_mp = [s for s in subject_ids
+                                 if s in motor_reg and s in motor_ran
+                                 and s in percept_reg and s in percept_ran]
+                    if not common_mp:
+                        continue
+
+                    freqs_mp = times_mp = None
+                    fp_ref = _allblocks_dir_mp / f'{common_mp[0]}_{lock_cap}_MotorTest_AllBlocks_{_c1}_ERSP.h5'
+                    if fp_ref.exists():
+                        try:
+                            _, freqs_mp, times_mp, _ = _load_h5_response(fp_ref, roi_name)
+                        except Exception:
+                            pass
+                    if freqs_mp is None:
+                        continue
+
+                    arr_reg_diff = np.array([motor_reg[s] - percept_reg[s] for s in common_mp])
+                    arr_ran_diff = np.array([motor_ran[s] - percept_ran[s] for s in common_mp])
+
+                    _pair_lbl = f'{_c1}_vs_{_c2}'
+                    sub_dir_mp = str(Path(output_dir) / f'testing_motor_perceptual_diff_{lock_type}_{roi_lower}')
+                    Path(sub_dir_mp).mkdir(parents=True, exist_ok=True)
+                    suptitle_mp = f'Motor-Perceptual Diff | {_pair_lbl} | {lock_cap}-locked | {roi_cap} ROI'
+                    out_name_mp = f'group_motor_perceptual_diff_{lock_type}_{roi_lower}_{_pair_lbl}.png'
+                    _plot_group_motor_perceptual_diff(
+                        arr_reg_diff, arr_ran_diff, freqs_mp, times_mp,
+                        common_mp, suptitle_mp, Path(sub_dir_mp) / out_name_mp,
+                        label_left=_c1, label_right=_c2,
+                    )
+
+        if any(c['lock_type'] == 'stimulus' for c in combos):
+            print(f"\n⚠  Stimulus-locked data source:")
+            print(f"   Run option 13 first, select 'Save for group analysis: y'")
+            print(f"   pkl will be saved automatically to data_dir")
+
+        print("\n" + "="*60)
+        print("輸出 ERSP 摘要 CSV 供 R 分析用...")
+        print("="*60)
+
+    def export_ersp_to_csv(data_dir, subject_ids, output_csv_dir=r'C:\Experiment\ersp_csv'):
+        """
+        從 h5 檔案讀取 ERSP 結果，
+        對指定頻率和時間窗口取平均，輸出成 CSV 供 R 分析用。
+
+        Response-locked：Motor ROI，Theta（4-8Hz），-300 to +50ms
+        Stimulus-locked：Perceptual ROI，Alpha（8-13Hz），+100 to +300ms
+        """
+        import pandas as pd
+        import glob
+        import warnings
+
+        WINDOWS = {
+            'response': {
+                'rois':      ['Motor', 'Motor_Frontal', 'Motor_Central',
+                              'Motor_Parietal', 'Motor_Occipital',
+                              'Perceptual', 'Perceptual_Parietal', 'Perceptual_Occipital',
+                              'Perceptual_Frontal', 'Perceptual_Central'],
+                'freq_band': 'theta',
+                'freq_range': (4, 8),
+                'time_range': (-0.300, 0.050),
+                'out_dir':   os.path.join(output_csv_dir, 'response_lock'),
+            },
+            'stimulus': {
+                'rois':      ['Motor', 'Motor_Frontal', 'Motor_Central',
+                              'Motor_Parietal', 'Motor_Occipital',
+                              'Perceptual', 'Perceptual_Parietal', 'Perceptual_Occipital',
+                              'Perceptual_Frontal', 'Perceptual_Central'],
+                'freq_band': 'alpha',
+                'freq_range': (8, 13),
+                'time_range': (0.100, 0.300),
+                'out_dir':   os.path.join(output_csv_dir, 'stimulus_lock'),
+            },
+        }
+
+        rows = []
+
+        for lock_type, cfg in WINDOWS.items():
+            os.makedirs(cfg['out_dir'], exist_ok=True)
+
+            # 掃描 h5 檔案
+            if lock_type == 'response':
+                h5_files = glob.glob(os.path.join(data_dir, '*_Response_*.h5'))
+            else:
+                h5_files = glob.glob(os.path.join(data_dir, '*_Stimulus_*.h5'))
+
+            for fpath in h5_files:
+                fname = os.path.basename(fpath)
+                parts = fname.replace('_ERSP.h5', '').split('_')
+
+                # 解析檔名：sub0001_Response_Learning_Block7-11_Regular_ERSP.h5
+                try:
+                    sid         = parts[0]
+                    phase       = parts[2]   # Learning / MotorTest / PerceptualTest
+                    block_group = parts[3]   # Block7-11
+                    trial_type  = parts[4]   # Regular / Random / high / low
+                except IndexError:
+                    print(f"  ⚠ 無法解析檔名：{fname}")
                     continue
 
-                arr_l = np.array(arr_left_list)
-                arr_r = np.array(arr_right_list)
-                common = ids_found
-                sub_dir_p = str(Path(output_dir) / f'testing_pooled_{test_type}_{lock_type}_{roi_lower}')
-                Path(sub_dir_p).mkdir(parents=True, exist_ok=True)
-                suptitle_p = (
-                    f'Testing Pooled | {test_type.capitalize()} | AllBlocks | '
-                    f'{lock_cap}-locked | {roi_cap} ROI'
-                )
-                out_name_p = f'group_pooled_{test_type}_{lock_type}_{roi_lower}_comparison.png'
-                _plot_group_block(
-                    arr_l, arr_r, freqs_p, times_p,
-                    common, suptitle_p, Path(sub_dir_p) / out_name_p,
-                    False, 1000, lock_type=lock_type,
-                    label_left=display_label2 or condition2,
-                    label_right=display_label1 or condition1,
-                )
+                if sid not in subject_ids:
+                    continue
 
-            # ── Motor-Perceptual Diff ──
-            motor_reg, motor_ran = {}, {}
-            percept_reg, percept_ran = {}, {}
-            lock_cap = lock_type.capitalize()
+                # 判斷 tasktype
+                if 'Motor' in phase and 'Test' in phase:
+                    tasktype = 'motor'
+                elif 'Perceptual' in phase and 'Test' in phase:
+                    tasktype = 'percept'
+                else:
+                    tasktype = 'none'
 
-            # stimulus-locked AllBlocks 存在 pkl_dir，response-locked 存在 h5_dir
-            _allblocks_dir_mp = Path(pkl_dir) if lock_type == 'stimulus' else Path(h5_dir)
-
-            for sid in subject_ids:
-                for cond, store_reg, store_ran in [
-                    ('MotorTest', motor_reg, motor_ran),
-                    ('PerceptualTest', percept_reg, percept_ran),
-                ]:
-                    fp_l = _allblocks_dir_mp / f'{sid}_{lock_cap}_{cond}_AllBlocks_{condition2}_ERSP.h5'
-                    fp_r = _allblocks_dir_mp / f'{sid}_{lock_cap}_{cond}_AllBlocks_{condition1}_ERSP.h5'
-                    if fp_l.exists():
-                        try:
-                            store_reg[sid], _, _ = _load_h5_response(fp_l, roi_name)
-                        except Exception:
-                            pass
-                    if fp_r.exists():
-                        try:
-                            store_ran[sid], _, _ = _load_h5_response(fp_r, roi_name)
-                        except Exception:
-                            pass
-
-            common_mp = [s for s in subject_ids
-                         if s in motor_reg and s in motor_ran
-                         and s in percept_reg and s in percept_ran]
-            if not common_mp:
-                continue
-
-            freqs_mp = times_mp = None
-            fp_ref = _allblocks_dir_mp / f'{common_mp[0]}_{lock_cap}_MotorTest_AllBlocks_{condition2}_ERSP.h5'
-            if fp_ref.exists():
+                # 讀取 h5
                 try:
-                    _, freqs_mp, times_mp = _load_h5_response(fp_ref, roi_name)
-                except Exception:
-                    pass
-            if freqs_mp is None:
-                continue
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        tfr_list = mne.time_frequency.read_tfrs(str(fpath))
+                    tfr = tfr_list[0] if isinstance(tfr_list, list) else tfr_list
+                except Exception as e:
+                    print(f"  ⚠ 讀取失敗：{fname}：{e}")
+                    continue
 
-            arr_reg_diff = np.array([motor_reg[s] - percept_reg[s] for s in common_mp])
-            arr_ran_diff = np.array([motor_ran[s] - percept_ran[s] for s in common_mp])
+                freqs = tfr.freqs
+                times = tfr.times
 
-            sub_dir_mp = str(Path(output_dir) / f'testing_motor_perceptual_diff_{lock_type}_{roi_lower}')
-            Path(sub_dir_mp).mkdir(parents=True, exist_ok=True)
-            suptitle_mp = f'Motor-Perceptual Diff | {lock_cap}-locked | {roi_cap} ROI'
-            out_name_mp = f'group_motor_perceptual_diff_{lock_type}_{roi_lower}.png'
-            _plot_group_motor_perceptual_diff(
-                arr_reg_diff, arr_ran_diff, freqs_mp, times_mp,
-                common_mp, suptitle_mp, Path(sub_dir_mp) / out_name_mp,
-                label_left=display_label2 or condition2,
-                label_right=display_label1 or condition1,
-            )
+                # 頻率和時間 mask
+                freq_mask = (freqs >= cfg['freq_range'][0]) & (freqs <= cfg['freq_range'][1])
+                time_mask = (times >= cfg['time_range'][0]) & (times <= cfg['time_range'][1])
 
-    if any(c['lock_type'] == 'stimulus' for c in combos):
-        print(f"\n⚠  Stimulus-locked data source:")
-        print(f"   Run option 13 first, select 'Save for group analysis: y'")
-        print(f"   pkl will be saved automatically to data_dir")
+                # 對每個 ROI 取平均
+                for roi_name in cfg['rois']:
+                    roi_channels = ROI_GROUPS.get(roi_name)
+                    if roi_channels is None:
+                        continue
 
-    print("\n" + "="*60)
-    print("輸出 ERSP 摘要 CSV 供 R 分析用...")
-    print("="*60)
+                    ch_names_upper = [ch.upper() for ch in tfr.ch_names]
+                    roi_idx = [ch_names_upper.index(ch.upper())
+                               for ch in roi_channels
+                               if ch.upper() in ch_names_upper]
+
+                    if not roi_idx:
+                        continue
+
+                    # data shape: (n_ch, n_freqs, n_times)
+                    roi_data = tfr.data[roi_idx]           # (n_roi_ch, n_freqs, n_times)
+                    roi_mean = roi_data.mean(axis=0)       # (n_freqs, n_times)
+                    ersp_mean = roi_mean[freq_mask][:, time_mask].mean()
+
+                    rows.append({
+                        'sid':         sid,
+                        'lock_type':   lock_type,
+                        'phase':       phase,
+                        'block_group': block_group,
+                        'trial_type':  trial_type,
+                        'tasktype':    tasktype,
+                        'roi':         roi_name,
+                        'freq_band':   cfg['freq_band'],
+                        'freq_min':    cfg['freq_range'][0],
+                        'freq_max':    cfg['freq_range'][1],
+                        'time_min_ms': int(cfg['time_range'][0] * 1000),
+                        'time_max_ms': int(cfg['time_range'][1] * 1000),
+                        'ersp_mean':   float(ersp_mean),
+                    })
+
+            # 輸出 CSV
+            if rows:
+                df = pd.DataFrame(rows)
+                df_lock = df[df['lock_type'] == lock_type]
+                if not df_lock.empty:
+                    out_path = os.path.join(cfg['out_dir'], 'ersp_summary.csv')
+                    df_lock.to_csv(out_path, index=False)
+                    print(f"  ✓ {lock_type} CSV 已儲存：{out_path}（{len(df_lock)} 行）")
+
     export_ersp_to_csv(
         data_dir=h5_dir,
         subject_ids=subject_ids,
@@ -1393,138 +1755,7 @@ def auto_group_ersp_analysis(subject_ids,
     return all_combo_results
 
 
-# ============================================================
-# 7. 輸出 ERSP 摘要 CSV 供 R 分析用
-# ============================================================
+    # ============================================================
+    # 7. 輸出 ERSP 摘要 CSV 供 R 分析用
+    # ============================================================
 
-def export_ersp_to_csv(data_dir, subject_ids, output_csv_dir=r'C:\Experiment\ersp_csv'):
-    """
-    從 h5 檔案讀取 ERSP 結果，
-    對指定頻率和時間窗口取平均，輸出成 CSV 供 R 分析用。
-
-    Response-locked：Motor ROI，Theta（4-8Hz），-300 to +50ms
-    Stimulus-locked：Perceptual ROI，Alpha（8-13Hz），+100 to +300ms
-    """
-    import pandas as pd
-    import glob
-    import warnings
-
-    WINDOWS = {
-        'response': {
-            'rois':      ['Motor', 'Motor_Frontal', 'Motor_Central',
-                          'Motor_Parietal', 'Motor_Occipital',
-                          'Perceptual', 'Perceptual_Parietal', 'Perceptual_Occipital',
-                          'Perceptual_Frontal', 'Perceptual_Central'],
-            'freq_band': 'theta',
-            'freq_range': (4, 8),
-            'time_range': (-0.300, 0.050),
-            'out_dir':   os.path.join(output_csv_dir, 'response_lock'),
-        },
-        'stimulus': {
-            'rois':      ['Motor', 'Motor_Frontal', 'Motor_Central',
-                          'Motor_Parietal', 'Motor_Occipital',
-                          'Perceptual', 'Perceptual_Parietal', 'Perceptual_Occipital',
-                          'Perceptual_Frontal', 'Perceptual_Central'],
-            'freq_band': 'alpha',
-            'freq_range': (8, 13),
-            'time_range': (0.100, 0.300),
-            'out_dir':   os.path.join(output_csv_dir, 'stimulus_lock'),
-        },
-    }
-
-    rows = []
-
-    for lock_type, cfg in WINDOWS.items():
-        os.makedirs(cfg['out_dir'], exist_ok=True)
-
-        # 掃描 h5 檔案
-        if lock_type == 'response':
-            h5_files = glob.glob(os.path.join(data_dir, '*_Response_*.h5'))
-        else:
-            h5_files = glob.glob(os.path.join(data_dir, '*_Stimulus_*.h5'))
-
-        for fpath in h5_files:
-            fname = os.path.basename(fpath)
-            parts = fname.replace('_ERSP.h5', '').split('_')
-
-            # 解析檔名：sub0001_Response_Learning_Block7-11_Regular_ERSP.h5
-            try:
-                sid         = parts[0]
-                phase       = parts[2]   # Learning / MotorTest / PerceptualTest
-                block_group = parts[3]   # Block7-11
-                trial_type  = parts[4]   # Regular / Random / high / low
-            except IndexError:
-                print(f"  ⚠ 無法解析檔名：{fname}")
-                continue
-
-            if sid not in subject_ids:
-                continue
-
-            # 判斷 tasktype
-            if 'Motor' in phase and 'Test' in phase:
-                tasktype = 'motor'
-            elif 'Perceptual' in phase and 'Test' in phase:
-                tasktype = 'percept'
-            else:
-                tasktype = 'none'
-
-            # 讀取 h5
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
-                    tfr_list = mne.time_frequency.read_tfrs(str(fpath))
-                tfr = tfr_list[0] if isinstance(tfr_list, list) else tfr_list
-            except Exception as e:
-                print(f"  ⚠ 讀取失敗：{fname}：{e}")
-                continue
-
-            freqs = tfr.freqs
-            times = tfr.times
-
-            # 頻率和時間 mask
-            freq_mask = (freqs >= cfg['freq_range'][0]) & (freqs <= cfg['freq_range'][1])
-            time_mask = (times >= cfg['time_range'][0]) & (times <= cfg['time_range'][1])
-
-            # 對每個 ROI 取平均
-            for roi_name in cfg['rois']:
-                roi_channels = ROI_GROUPS.get(roi_name)
-                if roi_channels is None:
-                    continue
-
-                ch_names_upper = [ch.upper() for ch in tfr.ch_names]
-                roi_idx = [ch_names_upper.index(ch.upper())
-                           for ch in roi_channels
-                           if ch.upper() in ch_names_upper]
-
-                if not roi_idx:
-                    continue
-
-                # data shape: (n_ch, n_freqs, n_times)
-                roi_data = tfr.data[roi_idx]           # (n_roi_ch, n_freqs, n_times)
-                roi_mean = roi_data.mean(axis=0)       # (n_freqs, n_times)
-                ersp_mean = roi_mean[freq_mask][:, time_mask].mean()
-
-                rows.append({
-                    'sid':         sid,
-                    'lock_type':   lock_type,
-                    'phase':       phase,
-                    'block_group': block_group,
-                    'trial_type':  trial_type,
-                    'tasktype':    tasktype,
-                    'roi':         roi_name,
-                    'freq_band':   cfg['freq_band'],
-                    'freq_min':    cfg['freq_range'][0],
-                    'freq_max':    cfg['freq_range'][1],
-                    'time_min_ms': int(cfg['time_range'][0] * 1000),
-                    'time_max_ms': int(cfg['time_range'][1] * 1000),
-                    'ersp_mean':   float(ersp_mean),
-                })
-
-        # 輸出 CSV
-        if rows:
-            df = pd.DataFrame(rows)
-            df_lock = df[df['lock_type'] == lock_type]
-            if not df_lock.empty:
-                out_path = os.path.join(cfg['out_dir'], 'ersp_summary.csv')
-                df_lock.to_csv(out_path, index=False)
-                print(f"  ✓ {lock_type} CSV 已儲存：{out_path}（{len(df_lock)} 行）")

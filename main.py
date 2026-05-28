@@ -32,6 +32,7 @@ import glob as glob_module
 from pathlib import Path
 import matplotlib.pyplot as plt
 plt.switch_backend(matplotlib.get_backend())  # 確認 backend 已套用
+matplotlib.rcParams["axes.unicode_minus"] = False  # 用 ASCII hyphen 取代 Unicode minus sign
 from scipy import stats
 import mne
 import numpy as np
@@ -774,6 +775,40 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                             method = method_map.get(method_choice, 'flexible')
                             
                             try:
+                                # === 步驟 0: artifact rejection 前先做 Stim/Resp 一對一同步 ===
+                                # 修正根本問題：Response 有對應 Stimulus 才保留，確保數量一致
+                                valid_resp_indices = sorted(resp_to_stim_map.keys())
+                                valid_stim_indices = sorted(set(resp_to_stim_map[i] for i in valid_resp_indices))
+
+                                # 確保雙向一致：每個 Stimulus 只被一個 Response 對應到
+                                stim_to_resp = {}
+                                for r_idx, s_idx in resp_to_stim_map.items():
+                                    if s_idx not in stim_to_resp:
+                                        stim_to_resp[s_idx] = r_idx
+                                # 以 Stimulus 為主，保留最早的 Response 對應
+                                valid_resp_indices = sorted(stim_to_resp.values())
+                                valid_stim_indices = sorted(stim_to_resp.keys())
+
+                                n_before_sync_r = len(epochs_resp)
+                                n_before_sync_s = len(epochs_stim)
+                                epochs_resp = epochs_resp[valid_resp_indices]
+                                epochs_stim = epochs_stim[valid_stim_indices]
+
+                                print(f"\n[Stim/Resp 同步]")
+                                print(f"  Response: {n_before_sync_r} → {len(epochs_resp)} "
+                                      f"（移除 {n_before_sync_r - len(epochs_resp)} 個無對應 Stim 的 Resp）")
+                                print(f"  Stimulus: {n_before_sync_s} → {len(epochs_stim)} "
+                                      f"（移除 {n_before_sync_s - len(epochs_stim)} 個無對應 Resp 的 Stim）")
+                                assert len(epochs_resp) == len(epochs_stim),                                     f"同步後數量仍不一致: Resp={len(epochs_resp)}, Stim={len(epochs_stim)}"
+
+                                # 更新 resp_to_stim_map（同步後 index 重新從 0 開始）
+                                resp_to_stim_map = {new_r: new_s
+                                                    for new_r, (new_s, _) in enumerate(
+                                                        (s, r) for s, r in enumerate(valid_stim_indices)
+                                                    )}
+                                # 實際上同步後是 1:1，直接建立 identity map
+                                resp_to_stim_map = {i: i for i in range(len(epochs_resp))}
+
                                 print("\n" + "="*60)
                                 print("步驟 1/3: 對 Response epochs 做極端值排除")
                                 print("="*60)
@@ -802,16 +837,14 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                                     print("步驟 2/3: 同步排除 Stimulus epochs")
                                     print("="*60)
                                     
-                                    # 找出對應的 Stimulus trial 索引
-                                    kept_stim_indices = []
-                                    for resp_idx in kept_resp_indices:
-                                        if resp_idx in resp_to_stim_map:
-                                            stim_idx = resp_to_stim_map[resp_idx]
-                                            kept_stim_indices.append(stim_idx)
-                                    
-                                    kept_stim_indices = sorted(set(kept_stim_indices))
+                                    # 同步後 resp_to_stim_map 是 identity，直接用 kept_resp_indices
+                                    kept_stim_indices = sorted(set(
+                                        resp_to_stim_map[r] for r in kept_resp_indices
+                                        if r in resp_to_stim_map
+                                    ))
                                     
                                     print(f"  對應到 {len(kept_stim_indices)} 個 Stimulus trials")
+                                    assert len(kept_stim_indices) == len(kept_resp_indices),                                         f"Stim/Resp 保留數量不一致: Stim={len(kept_stim_indices)}, Resp={len(kept_resp_indices)}"
                                     
                                     # 排除 Stimulus epochs
                                     epochs_stim_clean = epochs_stim[kept_stim_indices]
@@ -1164,80 +1197,108 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                             electrodes15 = [e.strip() for e in elec_input15.split(',') if e.strip()]
                             _h5_dir15 = r'C:\Experiment\Result\h5'
 
-                            is_triplet15 = (
-                                hasattr(stim_epochs, 'metadata') and
-                                stim_epochs.metadata is not None and
-                                'classification' in stim_epochs.metadata.columns and
-                                stim_epochs.metadata['classification'].iloc[0] == 'triplet'
-                            )
-                            lbl_left15  = 'high' if is_triplet15 else 'Regular'
-                            lbl_right15 = 'low'  if is_triplet15 else 'Random'
-
                             elec_out15 = os.path.join(_h5_dir15, '..', 'single_electrode')
                             os.makedirs(elec_out15, exist_ok=True)
 
                             import glob as _glob15
                             import numpy as _np15
                             import matplotlib.pyplot as _plt15
+                            matplotlib.rcParams["axes.unicode_minus"] = False
                             from mne_python_analysis.group_ersp_analysis import _load_h5_single_electrode
 
-                            h5_files_reg15 = sorted(_glob15.glob(
-                                os.path.join(_h5_dir15, f'{analysis_sid}_Stimulus_*_{lbl_left15}_ERSP.h5')))
+                            # 三組比較：Regular High vs Random Low / vs Random High / Random High vs Random Low
+                            _triplet_pairs15 = [
+                                ('regular_high', 'random_low',  'Regular High', 'Random Low'),
+                                ('regular_high', 'random_high', 'Regular High', 'Random High'),
+                                ('random_high',  'random_low',  'Random High',  'Random Low'),
+                            ]
+
+                            def _single_elec_plot15(fp_l15, fp_r15, electrode15, disp_l, disp_r, suffix):
+                                try:
+                                    el15, freqs15, times15, _nave15 = _load_h5_single_electrode(fp_l15, electrode15)
+                                    er15, _, _, _          = _load_h5_single_electrode(fp_r15, electrode15)
+                                except Exception as ex15:
+                                    print(f"    ⚠ {os.path.basename(fp_l15)}: {ex15}")
+                                    return
+                                diff15 = el15 - er15
+                                x_min15, x_max15 = -0.5, 0.5
+                                t_mask15 = (times15 >= x_min15) & (times15 <= x_max15)
+                                combined15 = _np15.concatenate([el15[:, t_mask15].ravel(), er15[:, t_mask15].ravel()])
+                                vmax15_c = _np15.percentile(_np15.abs(combined15), 95)
+                                vmax15_d = _np15.percentile(_np15.abs(diff15[:, t_mask15].ravel()), 95)
+                                if vmax15_c < 1e-10: vmax15_c = 1e-10
+                                if vmax15_d < 1e-10: vmax15_d = 1e-10
+                                lv15_c = _np15.linspace(-vmax15_c, vmax15_c, 20)
+                                lv15_d = _np15.linspace(-vmax15_d, vmax15_d, 20)
+                                base15 = os.path.basename(fp_l15).replace('_ERSP.h5', '').replace(f'{analysis_sid}_Stimulus_', '')
+                                block_label15 = '_'.join(base15.split('_')[:-1])
+                                fig15, axes15 = _plt15.subplots(1, 3, figsize=(18, 5))
+                                for ax15, data15, title15, lv15, vm15, cbl15 in [
+                                    (axes15[0], el15,   disp_l,                              lv15_c, vmax15_c, 'Power (dB)'),
+                                    (axes15[1], er15,   disp_r,                              lv15_c, vmax15_c, 'Power (dB)'),
+                                    (axes15[2], diff15, f'Diff ({disp_l} − {disp_r})', lv15_d, vmax15_d, 'Power Diff (dB)'),
+                                ]:
+                                    im15 = ax15.contourf(times15, freqs15, data15, levels=lv15,
+                                                         cmap='RdBu_r', vmin=-vm15, vmax=vm15, extend='both')
+                                    ax15.axvline(0, color='black', linestyle='--', linewidth=1.5)
+                                    ax15.axhline(8,  color='white', linestyle=':', linewidth=1, alpha=0.6)
+                                    ax15.axhline(13, color='white', linestyle=':', linewidth=1, alpha=0.6)
+                                    ax15.set_xlabel('Time (s)', fontsize=11)
+                                    ax15.set_ylabel('Frequency (Hz)', fontsize=11)
+                                    ax15.set_title(title15, fontsize=11, fontweight='bold')
+                                    ax15.set_xlim([x_min15, x_max15])
+                                    _plt15.colorbar(im15, ax=ax15, label=cbl15)
+                                fig15.suptitle(
+                                    f'{analysis_sid} | Stimulus-locked | {block_label15} | Electrode: {electrode15} | {disp_l} vs {disp_r}',
+                                    fontsize=11, fontweight='bold'
+                                )
+                                _plt15.tight_layout()
+                                out_fig15 = os.path.join(elec_out15,
+                                    f'{analysis_sid}_stimulus_{electrode15}_{block_label15}_{suffix}_comparison.png')
+                                fig15.savefig(out_fig15, dpi=300, bbox_inches='tight')
+                                _plt15.close(fig15)
+                                print(f"    ✓ {disp_l} vs {disp_r}: {out_fig15}")
 
                             for electrode15 in electrodes15:
                                 print(f"\n  電極: {electrode15}")
-                                for fp_l15 in h5_files_reg15:
-                                    fp_r15 = fp_l15.replace(f'_{lbl_left15}_', f'_{lbl_right15}_')
-                                    if not os.path.exists(fp_r15):
+                                for lbl_l15, lbl_r15, disp_l15, disp_r15 in _triplet_pairs15:
+                                    h5_files_l15 = sorted(_glob15.glob(
+                                        os.path.join(_h5_dir15, f'{analysis_sid}_Stimulus_*_{lbl_l15}_ERSP.h5')))
+                                    if not h5_files_l15:
+                                        print(f"    ⚠ 找不到 {lbl_l15} h5 檔案，跳過")
                                         continue
-                                    try:
-                                        el15, freqs15, times15 = _load_h5_single_electrode(fp_l15, electrode15)
-                                        er15, _, _             = _load_h5_single_electrode(fp_r15, electrode15)
-                                    except Exception as ex15:
-                                        print(f"    ⚠ {os.path.basename(fp_l15)}: {ex15}")
+                                    suffix15 = f"{lbl_l15}_vs_{lbl_r15}"
+                                    for fp_l15 in h5_files_l15:
+                                        fp_r15 = fp_l15.replace(f'_{lbl_l15}_', f'_{lbl_r15}_')
+                                        if not os.path.exists(fp_r15):
+                                            continue
+                                        _single_elec_plot15(fp_l15, fp_r15, electrode15, disp_l15, disp_r15, suffix15)
+
+                                # ── Epoch 4 vs Epoch 1（每個 triplet 條件）──
+                                print(f"\n  [{electrode15}] Epoch 4 vs Epoch 1 比較")
+                                _DISP15 = {
+                                    'regular_high': 'Regular High',
+                                    'random_high':  'Random High',
+                                    'random_low':   'Random Low',
+                                }
+                                for _cond15 in ['regular_high', 'random_high', 'random_low']:
+                                    _fp_e1_15 = os.path.join(
+                                        _h5_dir15,
+                                        f'{analysis_sid}_Stimulus_Learning_Block7-11_{_cond15}_ERSP.h5')
+                                    _fp_e4_15 = os.path.join(
+                                        _h5_dir15,
+                                        f'{analysis_sid}_Stimulus_Learning_Block22-26_{_cond15}_ERSP.h5')
+                                    if not os.path.exists(_fp_e1_15) or not os.path.exists(_fp_e4_15):
+                                        print(f"    ⚠ Epoch4vsEpoch1 {_cond15}: 檔案不存在，跳過")
                                         continue
-
-                                    diff15 = el15 - er15
-                                    x_min15, x_max15 = -0.5, 0.5
-                                    t_mask15 = (times15 >= x_min15) & (times15 <= x_max15)
-                                    combined15 = _np15.concatenate([el15[:, t_mask15].ravel(), er15[:, t_mask15].ravel()])
-                                    vmax15_c = _np15.percentile(_np15.abs(combined15), 95)
-                                    vmax15_d = _np15.percentile(_np15.abs(diff15[:, t_mask15].ravel()), 95)
-                                    if vmax15_c < 1e-10: vmax15_c = 1e-10
-                                    if vmax15_d < 1e-10: vmax15_d = 1e-10
-                                    lv15_c = _np15.linspace(-vmax15_c, vmax15_c, 20)
-                                    lv15_d = _np15.linspace(-vmax15_d, vmax15_d, 20)
-
-                                    base15 = os.path.basename(fp_l15).replace('_ERSP.h5', '').replace(f'{analysis_sid}_Stimulus_', '')
-                                    block_label15 = '_'.join(base15.split('_')[:-1])
-
-                                    fig15, axes15 = _plt15.subplots(1, 3, figsize=(18, 5))
-                                    for ax15, data15, title15, lv15, vm15, cbl15 in [
-                                        (axes15[0], el15,   f'{lbl_left15}',                          lv15_c, vmax15_c, 'Power (dB)'),
-                                        (axes15[1], er15,   f'{lbl_right15}',                         lv15_c, vmax15_c, 'Power (dB)'),
-                                        (axes15[2], diff15, f'Difference ({lbl_left15} - {lbl_right15})', lv15_d, vmax15_d, 'Power Difference (dB)'),
-                                    ]:
-                                        im15 = ax15.contourf(times15, freqs15, data15, levels=lv15,
-                                                             cmap='RdBu_r', vmin=-vm15, vmax=vm15, extend='both')
-                                        ax15.axvline(0, color='black', linestyle='--', linewidth=1.5)
-                                        ax15.axhline(8,  color='white', linestyle=':', linewidth=1, alpha=0.6)
-                                        ax15.axhline(13, color='white', linestyle=':', linewidth=1, alpha=0.6)
-                                        ax15.set_xlabel('Time (s)', fontsize=11)
-                                        ax15.set_ylabel('Frequency (Hz)', fontsize=11)
-                                        ax15.set_title(title15, fontsize=11, fontweight='bold')
-                                        ax15.set_xlim([x_min15, x_max15])
-                                        _plt15.colorbar(im15, ax=ax15, label=cbl15)
-
-                                    fig15.suptitle(
-                                        f'{analysis_sid} | Stimulus-locked | {block_label15} | Electrode: {electrode15}',
-                                        fontsize=12, fontweight='bold'
-                                    )
-                                    _plt15.tight_layout()
-                                    out_fig15 = os.path.join(elec_out15,
-                                        f'{analysis_sid}_stimulus_{electrode15}_{block_label15}_comparison.png')
-                                    fig15.savefig(out_fig15, dpi=300, bbox_inches='tight')
-                                    _plt15.close(fig15)
-                                    print(f"    ✓ 已儲存: {out_fig15}")
+                                    _disp15 = _DISP15.get(_cond15, _cond15)
+                                    _suffix15_e = f'epoch4_vs_epoch1_{_cond15}'
+                                    # 左=Epoch4, 右=Epoch1, Diff=Epoch4-Epoch1
+                                    _single_elec_plot15(
+                                        _fp_e4_15, _fp_e1_15, electrode15,
+                                        f'Epoch 4 (Block22-26)\n{_disp15}',
+                                        f'Epoch 1 (Block7-11)\n{_disp15}',
+                                        _suffix15_e)
 
                             processing_history.append(f"單一電極個人圖 Stimulus（{elec_input15}）")
 
@@ -1281,6 +1342,25 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
             # ASRT 群體分析 — 全自動跑完所有組合
             try:
                 from mne_python_analysis.group_ersp_analysis import auto_group_ersp_analysis
+
+                # ── Log 同步輸出到檔案 ──
+                import sys, datetime
+                _log_path = r'C:\Experiment\Result\group_ersp_analysis_log.txt'
+                class _Tee:
+                    def __init__(self, *files):
+                        self.files = files
+                    def write(self, obj):
+                        for f in self.files:
+                            f.write(obj)
+                            f.flush()
+                    def flush(self):
+                        for f in self.files:
+                            f.flush()
+                _log_file = open(_log_path, 'w', encoding='utf-8')
+                _log_file.write(f"=== Group ERSP Analysis Log ===\n")
+                _log_file.write(f"Start: {datetime.datetime.now()}\n\n")
+                _orig_stdout = sys.stdout
+                sys.stdout = _Tee(_orig_stdout, _log_file)
 
                 print("\n" + "="*60)
                 print("ASRT 群體分析 (Group-level ERSP)")
@@ -1359,8 +1439,8 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                     do_permutation_test = do_permutation,
                     n_permutations      = 1000,
                     unified_colorbar    = unified_colorbar,
-                    display_label1      = 'low'  if analysis_type == '2' else None,
-                    display_label2      = 'high' if analysis_type == '2' else None,
+                    display_label1      = None,
+                    display_label2      = None,
                 )
 
                 n_done = sum(1 for v in results.values() if v)
@@ -1378,7 +1458,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                         elec_out = os.path.join(OUTPUT_DIR, 'single_electrode')
 
                         if analysis_type == '2':
-                            lbl_left, lbl_right = 'high', 'low'
+                            lbl_left, lbl_right = 'regular_high', 'random_low'
                         else:
                             lbl_left, lbl_right = 'Regular', 'Random'
 
@@ -1403,6 +1483,14 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                 print(f"❌ 群體分析時發生錯誤: {str(e)}")
                 import traceback
                 traceback.print_exc()
+            finally:
+                try:
+                    sys.stdout = _orig_stdout
+                    _log_file.write(f"\nEnd: {datetime.datetime.now()}\n")
+                    _log_file.close()
+                    print(f"\n✓ Log 已儲存至: {_log_path}")
+                except Exception:
+                    pass
 
         # ============================================================
         # 選項 18: EEG-行為整合分析
@@ -1520,12 +1608,14 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                         return 'perceptual' if g in [27,28,33,34] else 'motor'
                     df['test_type'] = df['block_global'].apply(_tt)
 
-                    # Triplet 建立
+                    # Triplet 建立（Kóbor 2019：Trill/Repetition 排除）
                     def _triplets(seq):
                         r = [None, None]
                         for i in range(2, len(seq)):
                             n2,n1,n = seq[i-2],seq[i-1],seq[i]
-                            if str(n2)==str(n1)==str(n) or str(n2)==str(n):
+                            if n2 == n1 == n:   # Repetition
+                                r.append(None)
+                            elif n2 == n:        # Trill
                                 r.append(None)
                             else:
                                 r.append(f"{n2}{n1}{n}")
@@ -1534,24 +1624,50 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                     trip_map = {}
                     for (bt, bid), grp in df.groupby(['block_type', 'block_id']):
                         gs = grp.sort_values('trial_in_block')
-                        if 'correct_answer_index' not in gs.columns:
+                        if 'correct_answer_direction' not in gs.columns:
                             continue
-                        seq = gs['correct_answer_index'].astype(float).fillna(0).astype(int).tolist()
+                        seq = gs['correct_answer_direction'].astype(float).fillna(0).astype(int).tolist()
                         for idx, tri in zip(gs.index, _triplets(seq)):
                             trip_map[idx] = tri
                     df['triplet'] = df.index.map(lambda i: trip_map.get(i))
 
-                    # Frequency category（仿 epochs.py _assign_types()）
-                    lrm = (df['phase']=='Learning') & (df['position_type']=='random') & df['triplet'].notna()
-                    rc = _Counter(df.loc[lrm,'triplet'].tolist())
-                    med_c = np.median(list(rc.values())) if rc else 0
-                    print(f"  [{sid_label}] triplet 種類: {len(rc)}, median count: {med_c:.1f}")
+                    # ── P 序列萃取（consecutive P pair 方法，與 R 一致）──────────
+                    _p_consec_pairs = set()
+                    _key_color = 'arrow_color'
+                    _key_lb    = 'learning_trials.thisTrialN'
+                    _key_lt    = 'learning_loop.thisTrialN'
+                    if all(c in df.columns for c in [_key_color, _key_lb, _key_lt, 'correct_answer_direction']):
+                        _blk0 = df[
+                            (df[_key_lb].astype(float).astype(int) == 0) &
+                            (df[_key_lt].astype(float) >= 5) &
+                            (df[_key_color].str.lower() == 'white') &
+                            df['correct_answer_direction'].notna()
+                        ].sort_values(_key_lt)
+                        _p_seq = _blk0['correct_answer_direction'].astype(int).tolist()[:4]
+                        if len(_p_seq) == 4:
+                            _p_consec_pairs = {(_p_seq[i], _p_seq[(i+1)%4]) for i in range(4)}
+                            print(f"  [{sid_label}] P 序列: {_p_seq}  Consecutive pairs: {_p_consec_pairs}")
+                        else:
+                            print(f"  [{sid_label}] ⚠  P 序列萃取失敗，回退至 median 分類")
+                    else:
+                        print(f"  [{sid_label}] ⚠  缺少必要欄位，回退至 median 分類")
 
+                    # Frequency category（consecutive P pair 方法，Trill/Repetition → None 排除）
                     def _fcat(row):
-                        if row['position_type'] == 'regular': return 'high'
+                        if row['position_type'] == 'regular':
+                            return 'regular_high'
                         if row['position_type'] == 'random':
-                            if pd.isna(row['triplet']): return None
-                            return 'high' if rc.get(row['triplet'], 0) >= med_c else 'low'
+                            if pd.isna(row['triplet']):
+                                return None   # Trill / Repetition 排除
+                            if _p_consec_pairs:
+                                tri = str(row['triplet'])
+                                t1_val, t3_val = int(tri[0]), int(tri[2])
+                                return 'random_high' if (t1_val, t3_val) in _p_consec_pairs else 'random_low'
+                            else:
+                                lrm = (df['phase']=='Learning') & (df['position_type']=='random') & df['triplet'].notna()
+                                rc = _Counter(df.loc[lrm,'triplet'].tolist())
+                                med_c = np.median(list(rc.values())) if rc else 0
+                                return 'random_high' if rc.get(row['triplet'], 0) >= med_c else 'random_low'
                         return None
 
                     df['frequency_category'] = df.apply(_fcat, axis=1)
@@ -2626,15 +2742,6 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                         if elec_input16:
                             electrodes16 = [e.strip() for e in elec_input16.split(',') if e.strip()]
 
-                            is_triplet_mode = (
-                                hasattr(current_epochs, 'metadata') and
-                                current_epochs.metadata is not None and
-                                'classification' in current_epochs.metadata.columns and
-                                current_epochs.metadata['classification'].iloc[0] == 'triplet'
-                            )
-                            lbl_left16  = 'high' if is_triplet_mode else 'Regular'
-                            lbl_right16 = 'low'  if is_triplet_mode else 'Random'
-
                             elec_out16 = r'C:\Experiment\Result\single_electrode'
                             os.makedirs(elec_out16, exist_ok=True)
 
@@ -2643,76 +2750,120 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                             import matplotlib.pyplot as _plt16
                             from mne_python_analysis.group_ersp_analysis import _load_h5_single_electrode
 
-                            # triplet 模式：triplet\h5 讀 high/low
-                            # 非 triplet 模式：h5 讀 Regular/Random
+                            # triplet 模式走 triplet\h5，非 triplet 走 h5
+                            is_triplet_mode = (
+                                hasattr(current_epochs, 'metadata') and
+                                current_epochs.metadata is not None and
+                                'classification' in current_epochs.metadata.columns and
+                                current_epochs.metadata['classification'].iloc[0] == 'triplet'
+                            )
                             if is_triplet_mode:
                                 _h5_search_dir = r'C:\Experiment\Result\triplet\h5'
-                                h5_files_reg = sorted(_glob16.glob(
-                                    os.path.join(_h5_search_dir, f'{subject_id}_Response_*_high_ERSP.h5')))
-                                _lbl_pair = ('_high_', '_low_')
                             else:
                                 _h5_search_dir = r'C:\Experiment\Result\h5'
-                                h5_files_reg = sorted(_glob16.glob(
-                                    os.path.join(_h5_search_dir, f'{subject_id}_Response_*_Regular_ERSP.h5')))
-                                _lbl_pair = ('_Regular_', '_Random_')
 
-                            if not h5_files_reg:
-                                print(f"  ⚠ 找不到 h5 檔案於: {_h5_search_dir}")
+                            # 三組比較：Regular High vs Random Low / vs Random High / Random High vs Random Low
+                            _triplet_pairs16 = [
+                                ('regular_high', 'random_low',  'Regular High', 'Random Low'),
+                                ('regular_high', 'random_high', 'Regular High', 'Random High'),
+                                ('random_high',  'random_low',  'Random High',  'Random Low'),
+                            ]
+                            # 非 triplet 模式只畫一組
+                            _nontriplet_pairs16 = [
+                                ('Regular', 'Random', 'Regular', 'Random'),
+                            ]
+                            _pairs16 = _triplet_pairs16 if is_triplet_mode else _nontriplet_pairs16
+
+                            def _single_elec_plot16(fp_l, fp_r, electrode16, disp_l, disp_r, suffix):
+                                try:
+                                    el, freqs_e, times_e, _nave_e = _load_h5_single_electrode(fp_l, electrode16)
+                                    er, _, _, _          = _load_h5_single_electrode(fp_r, electrode16)
+                                except Exception as ex:
+                                    print(f"    ⚠ {os.path.basename(fp_l)}: {ex}")
+                                    return
+                                diff_e = el - er
+                                x_min_e, x_max_e = -0.5, 0.5
+                                t_mask_e = (times_e >= x_min_e) & (times_e <= x_max_e)
+                                combined_e = _np16.concatenate([el[:, t_mask_e].ravel(), er[:, t_mask_e].ravel()])
+                                vmax_e = _np16.percentile(_np16.abs(combined_e), 95)
+                                vmax_d = _np16.percentile(_np16.abs(diff_e[:, t_mask_e].ravel()), 95)
+                                if vmax_e < 1e-10: vmax_e = 1e-10
+                                if vmax_d < 1e-10: vmax_d = 1e-10
+                                lv_c = _np16.linspace(-vmax_e, vmax_e, 20)
+                                lv_d = _np16.linspace(-vmax_d, vmax_d, 20)
+                                base = os.path.basename(fp_l).replace('_ERSP.h5', '').replace(f'{subject_id}_Response_', '')
+                                block_label16 = '_'.join(base.split('_')[:-1])
+                                fig16, axes16 = _plt16.subplots(1, 3, figsize=(18, 5))
+                                for ax16, data16, title16, lv16, vm16, cbl16 in [
+                                    (axes16[0], el,     disp_l,                              lv_c, vmax_e, 'Power (dB)'),
+                                    (axes16[1], er,     disp_r,                              lv_c, vmax_e, 'Power (dB)'),
+                                    (axes16[2], diff_e, f'Diff ({disp_l} − {disp_r})', lv_d, vmax_d, 'Power Diff (dB)'),
+                                ]:
+                                    im16 = ax16.contourf(times_e, freqs_e, data16, levels=lv16,
+                                                         cmap='RdBu_r', vmin=-vm16, vmax=vm16, extend='both')
+                                    ax16.axvline(0, color='black', linestyle='--', linewidth=1.5)
+                                    ax16.axhline(8,  color='white', linestyle=':', linewidth=1, alpha=0.6)
+                                    ax16.axhline(13, color='white', linestyle=':', linewidth=1, alpha=0.6)
+                                    ax16.set_xlabel('Time (s)', fontsize=11)
+                                    ax16.set_ylabel('Frequency (Hz)', fontsize=11)
+                                    ax16.set_title(title16, fontsize=11, fontweight='bold')
+                                    ax16.set_xlim([x_min_e, x_max_e])
+                                    _plt16.colorbar(im16, ax=ax16, label=cbl16)
+                                fig16.suptitle(
+                                    f'{subject_id} | Response-locked | {block_label16} | Electrode: {electrode16} | {disp_l} vs {disp_r}',
+                                    fontsize=11, fontweight='bold'
+                                )
+                                _plt16.tight_layout()
+                                out_fig16 = os.path.join(elec_out16,
+                                    f'{subject_id}_response_{electrode16}_{block_label16}_{suffix}_comparison.png')
+                                fig16.savefig(out_fig16, dpi=300, bbox_inches='tight')
+                                _plt16.close(fig16)
+                                print(f"    ✓ {disp_l} vs {disp_r}: {out_fig16}")
 
                             for electrode16 in electrodes16:
                                 print(f"\n  電極: {electrode16}")
-                                for fp_l in h5_files_reg:
-                                    fp_r = fp_l.replace(_lbl_pair[0], _lbl_pair[1])
-                                    if not os.path.exists(fp_r):
+                                for lbl_l16, lbl_r16, disp_l16, disp_r16 in _pairs16:
+                                    h5_files_l16 = sorted(_glob16.glob(
+                                        os.path.join(_h5_search_dir, f'{subject_id}_Response_*_{lbl_l16}_ERSP.h5')))
+                                    if not h5_files_l16:
+                                        print(f"    ⚠ 找不到 {lbl_l16} h5 檔案，跳過")
                                         continue
-                                    try:
-                                        el, freqs_e, times_e = _load_h5_single_electrode(fp_l, electrode16)
-                                        er, _, _             = _load_h5_single_electrode(fp_r, electrode16)
-                                    except Exception as ex:
-                                        print(f"    ⚠ {os.path.basename(fp_l)}: {ex}")
+                                    suffix16 = f"{lbl_l16}_vs_{lbl_r16}"
+                                    for fp_l in h5_files_l16:
+                                        fp_r = fp_l.replace(f'_{lbl_l16}_', f'_{lbl_r16}_')
+                                        if not os.path.exists(fp_r):
+                                            continue
+                                        _single_elec_plot16(fp_l, fp_r, electrode16, disp_l16, disp_r16, suffix16)
+
+                                # ── Epoch 4 vs Epoch 1（每個 triplet 條件）──
+                                print(f"\n  [{electrode16}] Epoch 4 vs Epoch 1 比較")
+                                _DISP16 = {
+                                    'regular_high': 'Regular High',
+                                    'random_high':  'Random High',
+                                    'random_low':   'Random Low',
+                                }
+                                _e_pairs16 = (
+                                    ['regular_high', 'random_high', 'random_low']
+                                    if is_triplet_mode else ['Regular', 'Random']
+                                )
+                                for _cond16 in _e_pairs16:
+                                    _fp_e1_16 = os.path.join(
+                                        _h5_search_dir,
+                                        f'{subject_id}_Response_Learning_Block7-11_{_cond16}_ERSP.h5')
+                                    _fp_e4_16 = os.path.join(
+                                        _h5_search_dir,
+                                        f'{subject_id}_Response_Learning_Block22-26_{_cond16}_ERSP.h5')
+                                    if not os.path.exists(_fp_e1_16) or not os.path.exists(_fp_e4_16):
+                                        print(f"    ⚠ Epoch4vsEpoch1 {_cond16}: 檔案不存在，跳過")
                                         continue
-
-                                    diff_e = el - er
-                                    x_min_e, x_max_e = -0.5, 0.5
-                                    t_mask_e = (times_e >= x_min_e) & (times_e <= x_max_e)
-                                    combined_e = _np16.concatenate([el[:, t_mask_e].ravel(), er[:, t_mask_e].ravel()])
-                                    vmax_e = _np16.percentile(_np16.abs(combined_e), 95)
-                                    vmax_d = _np16.percentile(_np16.abs(diff_e[:, t_mask_e].ravel()), 95)
-                                    if vmax_e < 1e-10: vmax_e = 1e-10
-                                    if vmax_d < 1e-10: vmax_d = 1e-10
-                                    lv_c = _np16.linspace(-vmax_e, vmax_e, 20)
-                                    lv_d = _np16.linspace(-vmax_d, vmax_d, 20)
-
-                                    base = os.path.basename(fp_l).replace('_ERSP.h5', '').replace(f'{subject_id}_Response_', '')
-                                    block_label16 = '_'.join(base.split('_')[:-1])
-
-                                    fig16, axes16 = _plt16.subplots(1, 3, figsize=(18, 5))
-                                    for ax16, data16, title16, lv16, vm16, cbl16 in [
-                                        (axes16[0], el,     f'{lbl_left16}',                        lv_c, vmax_e, 'Power (dB)'),
-                                        (axes16[1], er,     f'{lbl_right16}',                       lv_c, vmax_e, 'Power (dB)'),
-                                        (axes16[2], diff_e, f'Difference ({lbl_left16} - {lbl_right16})', lv_d, vmax_d, 'Power Difference (dB)'),
-                                    ]:
-                                        im16 = ax16.contourf(times_e, freqs_e, data16, levels=lv16,
-                                                             cmap='RdBu_r', vmin=-vm16, vmax=vm16, extend='both')
-                                        ax16.axvline(0, color='black', linestyle='--', linewidth=1.5)
-                                        ax16.axhline(8,  color='white', linestyle=':', linewidth=1, alpha=0.6)
-                                        ax16.axhline(13, color='white', linestyle=':', linewidth=1, alpha=0.6)
-                                        ax16.set_xlabel('Time (s)', fontsize=11)
-                                        ax16.set_ylabel('Frequency (Hz)', fontsize=11)
-                                        ax16.set_title(title16, fontsize=11, fontweight='bold')
-                                        ax16.set_xlim([x_min_e, x_max_e])
-                                        _plt16.colorbar(im16, ax=ax16, label=cbl16)
-
-                                    fig16.suptitle(
-                                        f'{subject_id} | Response-locked | {block_label16} | Electrode: {electrode16}',
-                                        fontsize=12, fontweight='bold'
-                                    )
-                                    _plt16.tight_layout()
-                                    out_fig16 = os.path.join(elec_out16,
-                                        f'{subject_id}_response_{electrode16}_{block_label16}_comparison.png')
-                                    fig16.savefig(out_fig16, dpi=300, bbox_inches='tight')
-                                    _plt16.close(fig16)
-                                    print(f"    ✓ 已儲存: {out_fig16}")
+                                    _disp16 = _DISP16.get(_cond16, _cond16)
+                                    _suffix16_e = f'epoch4_vs_epoch1_{_cond16}'
+                                    # 左=Epoch4, 右=Epoch1, Diff=Epoch4-Epoch1
+                                    _single_elec_plot16(
+                                        _fp_e4_16, _fp_e1_16, electrode16,
+                                        f'Epoch 4 (Block22-26)\n{_disp16}',
+                                        f'Epoch 1 (Block7-11)\n{_disp16}',
+                                        _suffix16_e)
 
                             processing_history.append(f"單一電極個人圖（{elec_input16}）")
                 
@@ -3137,6 +3288,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
 def main():
     """主程式入口點"""
     set_matplotlib_properties()
+    matplotlib.rcParams["axes.unicode_minus"] = False  # 強制用 ASCII hyphen，避免 Glyph 8722 warning
     display_welcome_message(ASRT_MODULES_AVAILABLE)
     
     while True:
