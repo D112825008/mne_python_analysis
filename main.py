@@ -1431,22 +1431,29 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                 cb_choice = input("請選擇 (1/2) [1]: ").strip() or '1'
                 unified_colorbar = (cb_choice == '2')
 
-                results = auto_group_ersp_analysis(
-                    subject_ids         = subject_ids,
-                    pkl_dir             = PKL_DIR,
-                    h5_dir              = H5_DIR,
-                    output_dir          = OUTPUT_DIR,
-                    do_permutation_test = do_permutation,
-                    n_permutations      = 1000,
-                    unified_colorbar    = unified_colorbar,
-                    display_label1      = None,
-                    display_label2      = None,
-                )
+                # ── 詢問是否跳過群體 ROI 分析，直接進行單一電極分析 ──
+                print("\n" + "─"*60)
+                skip_roi = input("是否跳過群體 ROI 分析，直接進行單一電極分析？(y/n) [n]: ").strip().lower() or 'n'
 
-                n_done = sum(1 for v in results.values() if v)
-                processing_history.append(
-                    f"ASRT 群體分析（全自動，{len(subject_ids)} 位受試者，{n_done} 個組合完成）"
-                )
+                if skip_roi != 'y':
+                    results = auto_group_ersp_analysis(
+                        subject_ids         = subject_ids,
+                        pkl_dir             = PKL_DIR,
+                        h5_dir              = H5_DIR,
+                        output_dir          = OUTPUT_DIR,
+                        do_permutation_test = do_permutation,
+                        n_permutations      = 1000,
+                        unified_colorbar    = unified_colorbar,
+                        display_label1      = None,
+                        display_label2      = None,
+                    )
+
+                    n_done = sum(1 for v in results.values() if v)
+                    processing_history.append(
+                        f"ASRT 群體分析（全自動，{len(subject_ids)} 位受試者，{n_done} 個組合完成）"
+                    )
+                else:
+                    print("  → 跳過群體 ROI 分析")
 
                 # ── 單一電極群體分析 ──
                 print("\n" + "─"*60)
