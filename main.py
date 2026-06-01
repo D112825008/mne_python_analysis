@@ -1640,12 +1640,13 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
 
                     # ── P 序列萃取（consecutive P pair 方法，與 R 一致）──────────
                     _p_consec_pairs = set()
+                    med_c = np.nan   # Bug 5 修正：外層先初始化；P 序列成功時為 nan，fallback 時覆寫
                     _key_color = 'arrow_color'
                     _key_lb    = 'learning_trials.thisTrialN'
                     _key_lt    = 'learning_loop.thisTrialN'
                     if all(c in df.columns for c in [_key_color, _key_lb, _key_lt, 'correct_answer_direction']):
                         _blk0 = df[
-                            (df[_key_lb].astype(float).astype(int) == 0) &
+                            (df[_key_lb].astype(float).fillna(-1).astype(int) == 0) &
                             (df[_key_lt].astype(float) >= 5) &
                             (df[_key_color].str.lower() == 'white') &
                             df['correct_answer_direction'].notna()
@@ -1659,6 +1660,18 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                     else:
                         print(f"  [{sid_label}] ⚠  缺少必要欄位，回退至 median 分類")
 
+                    # Bug 5 修正：fallback 的 Counter 和 median 移到 _fcat 外部計算一次
+                    _rc_fallback = None
+                    if not _p_consec_pairs:
+                        _lrm = (
+                            (df['phase'] == 'Learning') &
+                            (df['position_type'] == 'random') &
+                            df['triplet'].notna()
+                        )
+                        _rc_fallback = _Counter(df.loc[_lrm, 'triplet'].tolist())
+                        med_c = np.median(list(_rc_fallback.values())) if _rc_fallback else 0.
+                        print(f"  [{sid_label}] Fallback median count: {med_c}")
+
                     # Frequency category（consecutive P pair 方法，Trill/Repetition → None 排除）
                     def _fcat(row):
                         if row['position_type'] == 'regular':
@@ -1671,10 +1684,8 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                                 t1_val, t3_val = int(tri[0]), int(tri[2])
                                 return 'random_high' if (t1_val, t3_val) in _p_consec_pairs else 'random_low'
                             else:
-                                lrm = (df['phase']=='Learning') & (df['position_type']=='random') & df['triplet'].notna()
-                                rc = _Counter(df.loc[lrm,'triplet'].tolist())
-                                med_c = np.median(list(rc.values())) if rc else 0
-                                return 'random_high' if rc.get(row['triplet'], 0) >= med_c else 'random_low'
+                                cnt = _rc_fallback.get(row['triplet'], 0)
+                                return 'random_high' if cnt >= med_c else 'random_low'
                         return None
 
                     df['frequency_category'] = df.apply(_fcat, axis=1)
@@ -1696,7 +1707,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                     print(f"  [{sid_label}] RT 過濾: {n0} → {len(df)} trials")
 
                     df['sid'] = sid_label
-                    df['triplet_median_count'] = med_c   # 記錄供驗證用
+                    df['triplet_median_count'] = med_c   # 現在外層 scope 一定有 med_c
                     return df, med_c
 
                 # ────────────────────────────────────────────────────────────
@@ -1722,16 +1733,24 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                         freq_r = (4., 8.)   if ltype == 'response' else (8., 13.)
                     if time_r is None:
                         time_r = (-.300, .050) if ltype == 'response' else (.100, .300)
+                    _VALID_TT = {'regular_high', 'random_high', 'random_low'}
                     rows = []
                     for fp in sorted(Path(h5_dir_path).glob(f'*_{prefix}_*.h5')):
                         stem = fp.stem.replace('_ERSP', '')
                         parts = stem.split('_')
+                        # 檔名格式：{sid}_{prefix}_{phase}_{block_group}_{tt_p1}_{tt_p2}
+                        # trial_type 含底線（regular_high 等），共佔 parts[-2] 和 parts[-1]
+                        # 所以索引整體向左移一位：prefix 在 parts[-5]
                         try:
-                            trial_type  = parts[-1].lower()
-                            block_group = parts[-2]
-                            phase       = parts[-3]
-                            sid18       = '_'.join(parts[:-4])
-                            if parts[-4] != prefix or sid18 not in sids:
+                            if len(parts) < 6:
+                                continue
+                            trial_type  = f"{parts[-2]}_{parts[-1]}".lower()
+                            block_group = parts[-3]
+                            phase       = parts[-4]
+                            sid18       = '_'.join(parts[:-5])
+                            if parts[-5] != prefix or sid18 not in sids:
+                                continue
+                            if trial_type not in _VALID_TT or not block_group.startswith('Block'):
                                 continue
                         except IndexError:
                             continue
@@ -1752,44 +1771,58 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                             if not ridx: continue
                             val = tfr.data[ridx].mean(axis=0)[np.ix_(fm,tm)].mean()
                             rows.append({'sid':sid18,'lock_type':ltype,'phase':phase,
-                                         'eeg_block_group':block_group,'trial_type':trial_type,
-                                         'roi':rname,'ersp_mean':float(val)})
+                                        'eeg_block_group':block_group,'trial_type':trial_type,
+                                        'roi':rname,'ersp_mean':float(val)})
                     df18 = pd.DataFrame(rows)
                     print(f"  ✓ ERSP: {len(df18)} rows, {df18['sid'].nunique() if len(df18) else 0} 受試者")
+                    if len(df18) > 0:
+                        print(f"    trial_type: {sorted(df18['trial_type'].unique())}")
+                        print(f"    phase:      {sorted(df18['phase'].unique())}")
                     return df18
 
                 # ────────────────────────────────────────────────────────────
                 # 內部函數：Join
                 # ────────────────────────────────────────────────────────────
                 def _join_18(ersp_df, beh_sum):
-                    def _p2bt(p): return 'learning' if p=='Learning' else 'testing'
+                    def _p2bt(p): return 'learning' if p == 'Learning' else 'testing'
                     def _p2tt(p):
-                        if p=='MotorTest': return 'motor'
-                        if p=='PerceptualTest': return 'perceptual'
+                        if p == 'MotorTest':      return 'motor'
+                        if p == 'PerceptualTest': return 'perceptual'
                         return 'none'
                     e = ersp_df.copy()
                     e['block_type'] = e['phase'].map(_p2bt)
                     e['tasktype']   = e['phase'].map(_p2tt)
                     b = beh_sum.copy()
-                    b['tasktype'] = b['test_type']
-                    # phase 欄位在兩邊都存在會造成衝突，先從行為資料側移除
+                    # Bug 2 修正：相容兩種 beh_sum 來源
+                    # PsychoPy 模式 → 有 test_type，沒有 tasktype
+                    # R CSV 模式   → 有 tasktype（已映射完畢），沒有 test_type
+                    if 'test_type' in b.columns and 'tasktype' not in b.columns:
+                        b['tasktype'] = b['test_type'].fillna('none')
+                    # R CSV 模式的 beh_sum 已有正確的 tasktype，直接沿用，不做任何操作
                     b = b.drop(columns=[c for c in ['phase', 'block_type'] if c in b.columns])
-                    # ── Debug：顯示兩邊 join key 的實際值 ─────────────
-                    print("  [Debug] ERSP 側 trial_type 值:", sorted(e['trial_type'].unique()))
-                    print("  [Debug] ERSP 側 tasktype 值: ", sorted(e['tasktype'].unique()))
-                    print("  [Debug] ERSP 側 eeg_block_group 值:", sorted(e['eeg_block_group'].unique()))
-                    print("  [Debug] ERSP 側 sid 值:", sorted(e['sid'].unique()))
-                    print("  [Debug] 行為 側 trial_type 值:", sorted(b['trial_type'].unique()))
-                    print("  [Debug] 行為 側 tasktype 值: ", sorted(b['tasktype'].unique()))
-                    print("  [Debug] 行為 側 eeg_block_group 值:", sorted(b['eeg_block_group'].unique()))
-                    print("  [Debug] 行為 側 sid 值:", sorted(b['sid'].unique()))
-                    joined = e.merge(b, on=['sid','eeg_block_group','trial_type','tasktype'],
-                                     how='inner')
-                    # 確保 phase 欄位存在（來自 EEG 側）
+                    print("  [Debug] ERSP 側 trial_type:", sorted(e['trial_type'].unique()))
+                    print("  [Debug] ERSP 側 tasktype:  ", sorted(e['tasktype'].unique()))
+                    print("  [Debug] ERSP 側 block_group:", sorted(e['eeg_block_group'].unique()))
+                    print("  [Debug] 行為 側 trial_type:", sorted(b['trial_type'].unique()))
+                    print("  [Debug] 行為 側 tasktype:  ", sorted(b['tasktype'].unique()))
+                    print("  [Debug] 行為 側 block_group:", sorted(b['eeg_block_group'].unique()))
+                    joined = e.merge(b, on=['sid', 'eeg_block_group', 'trial_type', 'tasktype'],
+                                        how='inner')
                     if 'phase' not in joined.columns and 'phase_eeg' in joined.columns:
                         joined['phase'] = joined['phase_eeg']
+                    # Bug 4 修正：正規化 trial_type 和 frequency_category 為 'high'/'low'
+                    # trial_type    → Python 繪圖函式使用
+                    # frequency_category → Shiny pivot_wider 使用
+                    _NORM = {'regular_high': 'high', 'random_high': 'high', 'random_low': 'low'}
+                    joined['trial_type'] = (
+                        joined['trial_type'].map(_NORM).fillna(joined['trial_type'])
+                    )
+                    if 'frequency_category' in joined.columns:
+                        joined['frequency_category'] = (
+                            joined['frequency_category'].map(_NORM).fillna(joined['frequency_category'])
+                        )
                     print(f"  ✓ Join: {len(joined)} rows, {joined['sid'].nunique()} 受試者")
-                    print(f"  欄位: {list(joined.columns)}")
+                    print(f"  trial_type 正規化後: {sorted(joined['trial_type'].unique())}")
                     return joined
 
                 # ────────────────────────────────────────────────────────────
@@ -1830,7 +1863,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                             bbox=dict(boxstyle='round', fc='white', alpha=.8))
                     ax.set_xlabel('RT Effect: High - Low (ms)', fontsize=11)
                     ax.set_ylabel('ERSP Effect: High - Low (dB)', fontsize=11)
-                    ax.set_title(f'EEG-行為相關 | {roi} | {phase}',
+                    ax.set_title(f'EEG-Behavior Correlation | {roi} | {phase}',
                                  fontsize=12, fontweight='bold')
                     plt.tight_layout()
                     fig.savefig(out_path, dpi=200, bbox_inches='tight')
@@ -1875,7 +1908,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                     ax1.set_xlabel('Block Group', fontsize=11)
                     ax1.set_ylabel('RT (ms)', fontsize=11)
                     ax2.set_ylabel('ERSP (dB)', fontsize=11)
-                    ax1.set_title(f'學習曲線 | {roi} | {phase} | {title_s}',
+                    ax1.set_title(f'Learning Curve | {roi} | {phase} | {title_s}',
                                   fontsize=12, fontweight='bold')
                     l1,lb1 = ax1.get_legend_handles_labels()
                     l2,lb2 = ax2.get_legend_handles_labels()
@@ -1926,10 +1959,10 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                              f'{method.capitalize()} r={r3:.3f}\np={p3:.3f}\nn={len(pdf3)}',
                              transform=ax3.transAxes, ha='right', va='top', fontsize=10,
                              bbox=dict(boxstyle='round', fc='white', alpha=.8))
-                    ll3 = '每人一點' if level=='subject' else '每人×每Block Group一點'
+                    ll3 = 'per subject' if level=='subject' else 'per subject x Block Group'
                     ax3.set_xlabel('RT Effect: High - Low (ms)', fontsize=11)
                     ax3.set_ylabel('ERSP Effect: High - Low (dB)', fontsize=11)
-                    ax3.set_title(f'EEG-行為相關 [{ll3}] | {roi} | {phase}',
+                    ax3.set_title(f'EEG-Behavior Correlation [{ll3}] | {roi} | {phase}',
                                   fontsize=11, fontweight='bold')
                     plt.tight_layout()
                     fig3.savefig(out_path, dpi=200, bbox_inches='tight')
@@ -2110,9 +2143,19 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                     _r_df['eeg_block_group'] = _r_df['unitx'].map(_UNITX_TO_EEG_18)
                     _r_df = _r_df[_r_df['eeg_block_group'].notna()].copy()
 
-                    # frequency_category (high/low) 直接作為 trial_type
-                    # (regular_high + random_high → "high", random_low → "low")
-                    _r_df['trial_type'] = _r_df['frequency_category']
+                    # Bug 3 修正：組合 trial_type + frequency_category
+                    # CSV 欄位：trial_type='regular'/'random'，frequency_category='high'/'low'
+                    # ERSP h5：trial_type='regular_high'/'random_high'/'random_low'
+                    # 必須組合才能 join 對齊
+                    _r_df['trial_type'] = (
+                        _r_df['trial_type'].str.strip() + '_' +
+                        _r_df['frequency_category'].str.strip()
+                    )
+                    _VALID_TT_18 = {'regular_high', 'random_high', 'random_low'}
+                    _n_before = len(_r_df)
+                    _r_df = _r_df[_r_df['trial_type'].isin(_VALID_TT_18)].copy()
+                    if len(_r_df) < _n_before:
+                        print(f"  ⚠ 過濾掉 {_n_before - len(_r_df)} 行非預期 trial_type")
 
                     # R tasktype → EEG tasktype
                     # "learning"→"none", "motor"→"motor", "percept"→"perceptual"
@@ -2120,18 +2163,16 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                     _r_df['tasktype'] = _r_df['tasktype'].map(_tt_map).fillna(_r_df['tasktype'])
 
                     # 聚合到 eeg_block_group 層次
-                    # frequency_category == trial_type in R CSV mode (both are high/low)
-                    _r_df['frequency_category'] = _r_df['trial_type']
                     beh_sum_18 = (
-                        _r_df.groupby(['sid', 'eeg_block_group', 'trial_type', 'tasktype', 'frequency_category'])
+                        _r_df.groupby(['sid', 'eeg_block_group', 'trial_type',
+                                       'tasktype', 'frequency_category'])
                         .agg(rt=('rt', 'median'), n_trials=('n', 'sum'))
                         .reset_index()
                     )
                     print(f"  ✓ R 行為資料聚合完成: {len(beh_sum_18)} rows")
-                    print(f"    受試者: {sorted(beh_sum_18['sid'].unique())}")
-                    print(f"    trial_type: {sorted(beh_sum_18['trial_type'].unique())}")
-                    print(f"    tasktype:   {sorted(beh_sum_18['tasktype'].unique())}")
-
+                    print(f"    受試者:    {sorted(beh_sum_18['sid'].unique())}")
+                    print(f"    trial_type:{sorted(beh_sum_18['trial_type'].unique())}")
+                    print(f"    tasktype:  {sorted(beh_sum_18['tasktype'].unique())}")
                 else:
                     # ════ PsychoPy CSV 模式 ═════════════════════════════════
                     all_beh_18 = []
@@ -2452,17 +2493,22 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                         _stem  = _fp.stem.replace('_ERSP', '')
                         _parts = _stem.split('_')
                         try:
-                            _tt18  = _parts[-1].lower()
-                            _bg18  = _parts[-2]   # block_group
-                            _ph18  = _parts[-3]   # MotorTest / PerceptualTest / Learning
-                            _sid18 = '_'.join(_parts[:-4])
-                            if _parts[-4] != _ts_prefix or _sid18 not in subject_ids_18:
+                            if len(_parts) < 6:
                                 continue
-                            if _tt18 != 'high':
+                            _tt18  = f"{_parts[-2]}_{_parts[-1]}".lower()  # 'regular_high' 等
+                            _bg18  = _parts[-3]   # block_group，e.g. 'Block27-28' / 'AllBlocks'
+                            _ph18  = _parts[-4]   # 'Learning' / 'MotorTest' / 'PerceptualTest'
+                            _sid18 = '_'.join(_parts[:-5])
+                            if _parts[-5] != _ts_prefix or _sid18 not in subject_ids_18:
+                                continue
+                            # 只處理 high 試次（regular_high + random_high）
+                            if _tt18 not in ('regular_high', 'random_high'):
                                 continue
                             # Testing：只用 AllBlocks 避免同一受試者重複
                             if _ph18 in ('MotorTest', 'PerceptualTest') and _bg18 != 'AllBlocks':
                                 continue
+                        except IndexError:
+                            continue
                         except IndexError:
                             continue
                         try:
