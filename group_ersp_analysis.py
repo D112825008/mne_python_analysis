@@ -310,9 +310,14 @@ def _load_subject_testing_pair(pkl_dir, subject_id, lock_type,
 
 def _load_group_data(subject_ids, pkl_dir, lock_type, phase,
                      test_type, group_label, trial_type, roi_name,
-                     h5_dir=None):
+                     h5_dir=None, silent=False):
     """
     載入所有受試者在某個條件（某個 Block 組）的 ERSP。
+
+    Parameters
+    ----------
+    silent : bool
+        若為 True，不印出讀檔進度（用於 section vmax 預掃描）。
 
     Returns
     -------
@@ -338,12 +343,15 @@ def _load_group_data(subject_ids, pkl_dir, lock_type, phase,
             loaded_ids.append(sid)
             if freqs is None:
                 freqs, times = f, t
-            print(f"    ✓ {sid}  shape={ersp.shape}  n_trials={nave}")
+            if not silent:
+                print(f"    ✓ {sid}  shape={ersp.shape}  n_trials={nave}")
         except FileNotFoundError as e:
-            print(f"    ✗ {sid}: {e}")
+            if not silent:
+                print(f"    ✗ {sid}: {e}")
             missing_ids.append(sid)
         except Exception as e:
-            print(f"    ✗ {sid}: load failed ({e})")
+            if not silent:
+                print(f"    ✗ {sid}: load failed ({e})")
             missing_ids.append(sid)
 
     if not ersp_list:
@@ -355,6 +363,288 @@ def _load_group_data(subject_ids, pkl_dir, lock_type, phase,
 # ============================================================
 # 4. 繪圖
 # ============================================================
+
+
+# ============================================================
+# 3b. Section-level colorbar 計算函式
+# ============================================================
+
+def _compute_block_section_vmax(
+    subject_ids, pkl_dir, h5_dir,
+    lock_type, phase, block_groups,
+    condition_pairs, roi_names,
+    test_type=None,
+    x_min=-0.5, x_max=0.5,
+    percentile=95,
+    label='Section'
+):
+    """
+    跨 condition_pair × ROI × block_group 計算全域 vmax。
+    用於讓同一 section 內的所有投影片共用同一個 colorbar。
+
+    Parameters
+    ----------
+    block_groups : list of str
+        e.g. ['Block7-11'] 或 ['Block7-11', 'Block22-26']
+    condition_pairs : list of (str, str)
+        e.g. [('regular_high','random_low'), ...]
+    roi_names : list of str
+        e.g. ['motor', 'perceptual']
+
+    Returns
+    -------
+    vmax_cond, vmax_diff : float or None
+    """
+    cond_vals, diff_vals = [], []
+    n_loaded = 0
+
+    for roi_name in roi_names:
+        roi_lower = roi_name.lower()
+        for (c1, c2) in condition_pairs:
+            for bg in block_groups:
+                a1, _, times, ids1, _, _ = _load_group_data(
+                    subject_ids, pkl_dir, lock_type, phase,
+                    test_type, bg, c1, roi_lower, h5_dir=h5_dir,
+                    silent=True
+                )
+                a2, _, _, ids2, _, _ = _load_group_data(
+                    subject_ids, pkl_dir, lock_type, phase,
+                    test_type, bg, c2, roi_lower, h5_dir=h5_dir,
+                    silent=True
+                )
+                if a1 is None or a2 is None:
+                    continue
+                common = [s for s in ids1 if s in ids2]
+                if not common:
+                    continue
+                a1c = a1[[ids1.index(s) for s in common]]
+                a2c = a2[[ids2.index(s) for s in common]]
+                rm = a1c.mean(axis=0)
+                rn = a2c.mean(axis=0)
+                diff = rm - rn
+                t_mask = (times >= x_min) & (times <= x_max)
+                cond_vals.append(np.abs(rm[:, t_mask]).ravel())
+                cond_vals.append(np.abs(rn[:, t_mask]).ravel())
+                diff_vals.append(np.abs(diff[:, t_mask]).ravel())
+                n_loaded += 1
+
+    if not cond_vals:
+        print(f"  ⚠ [SECTION COLORBAR] [{label}] 無有效資料，各圖獨立計算")
+        return None, None
+
+    vmax_cond = np.percentile(np.concatenate(cond_vals), percentile)
+    vmax_diff = np.percentile(np.concatenate(diff_vals), percentile)
+
+    print(f"\n{'═'*62}")
+    print(f"  SECTION COLORBAR LOG  >>>  {label}")
+    print(f"  掃描: {len(roi_names)} ROI × {len(condition_pairs)} 條件對 × {len(block_groups)} block組  (n_matrix={n_loaded})")
+    print(f"  vmax_cond = ±{vmax_cond:.4f} dB   ← 套用至所有 Condition 面板")
+    print(f"  vmax_diff = ±{vmax_diff:.4f} dB   ← 套用至所有 Difference 面板")
+    print(f"{'═'*62}\n")
+
+    return vmax_cond, vmax_diff
+
+
+def _compute_epoch_diff_section_vmax(
+    subject_ids, pkl_dir, h5_dir,
+    lock_type, all_conditions, roi_names,
+    e1_label='Block7-11', e4_label='Block22-26',
+    x_min=-0.5, x_max=0.5,
+    percentile=95,
+    label='Epoch4-Epoch1 Section'
+):
+    """
+    跨 condition × ROI 計算 Epoch4-vs-Epoch1 比較的全域 vmax。
+    用於讓 Section 3（Ep4-Ep1）的所有投影片共用同一個 colorbar。
+
+    Parameters
+    ----------
+    all_conditions : list of str
+        e.g. ['regular_high', 'random_high', 'random_low']
+    """
+    cond_vals, diff_vals = [], []
+    n_loaded = 0
+
+    for roi_name in roi_names:
+        roi_lower = roi_name.lower()
+        for cond in all_conditions:
+            a_e1, _, times, ids_e1, _, _ = _load_group_data(
+                subject_ids, pkl_dir, lock_type, 'learning',
+                None, e1_label, cond, roi_lower, h5_dir=h5_dir,
+                silent=True
+            )
+            a_e4, _, _, ids_e4, _, _ = _load_group_data(
+                subject_ids, pkl_dir, lock_type, 'learning',
+                None, e4_label, cond, roi_lower, h5_dir=h5_dir,
+                silent=True
+            )
+            if a_e1 is None or a_e4 is None:
+                continue
+            common = [s for s in ids_e1 if s in ids_e4]
+            if not common:
+                continue
+            a_e1c = a_e1[[ids_e1.index(s) for s in common]]
+            a_e4c = a_e4[[ids_e4.index(s) for s in common]]
+            rm   = a_e4c.mean(axis=0)   # Epoch4
+            rn   = a_e1c.mean(axis=0)   # Epoch1
+            diff = rm - rn
+            t_mask = (times >= x_min) & (times <= x_max)
+            cond_vals.append(np.abs(rm[:, t_mask]).ravel())
+            cond_vals.append(np.abs(rn[:, t_mask]).ravel())
+            diff_vals.append(np.abs(diff[:, t_mask]).ravel())
+            n_loaded += 1
+
+    if not cond_vals:
+        print(f"  ⚠ [SECTION COLORBAR] [{label}] 無有效資料，各圖獨立計算")
+        return None, None
+
+    vmax_cond = np.percentile(np.concatenate(cond_vals), percentile)
+    vmax_diff = np.percentile(np.concatenate(diff_vals), percentile)
+
+    print(f"\n{'═'*62}")
+    print(f"  SECTION COLORBAR LOG  >>>  {label}")
+    print(f"  掃描: {len(roi_names)} ROI × {len(all_conditions)} 條件  (n_matrix={n_loaded})")
+    print(f"  vmax_cond = ±{vmax_cond:.4f} dB   ← 套用至 Epoch4 / Epoch1 面板")
+    print(f"  vmax_diff = ±{vmax_diff:.4f} dB   ← 套用至 Epoch4-Epoch1 Diff 面板")
+    print(f"{'═'*62}\n")
+
+    return vmax_cond, vmax_diff
+
+
+def _compute_allblocks_testing_vmax(
+    subject_ids, pkl_dir, h5_dir,
+    lock_type, test_type, condition_pairs, roi_names,
+    x_min=-0.5, x_max=0.5,
+    percentile=95,
+    label=''
+):
+    """
+    計算 AllBlocks Testing 全域 vmax。
+    用於讓同一 test_type 的所有 AllBlocks 投影片共用 colorbar。
+    """
+    cond_vals, diff_vals = [], []
+    n_loaded = 0
+    lock_cap  = lock_type.capitalize()
+    cond_name = 'MotorTest' if test_type == 'motor' else 'PerceptualTest'
+    allblocks_dir = Path(pkl_dir) if lock_type == 'stimulus' else Path(h5_dir)
+
+    for roi_name in roi_names:
+        roi_lower = roi_name.lower()
+        for (c1, c2) in condition_pairs:
+            arr_l_list, arr_r_list = [], []
+            times_ref = None
+            for sid in subject_ids:
+                fp_l = allblocks_dir / f'{sid}_{lock_cap}_{cond_name}_AllBlocks_{c1}_ERSP.h5'
+                fp_r = allblocks_dir / f'{sid}_{lock_cap}_{cond_name}_AllBlocks_{c2}_ERSP.h5'
+                if not fp_l.exists() or not fp_r.exists():
+                    continue
+                try:
+                    el, _, t, _ = _load_h5_response(fp_l, roi_lower)
+                    er, _, _, _ = _load_h5_response(fp_r, roi_lower)
+                    arr_l_list.append(el)
+                    arr_r_list.append(er)
+                    if times_ref is None:
+                        times_ref = t
+                except Exception:
+                    continue
+            if not arr_l_list or times_ref is None:
+                continue
+            rm   = np.array(arr_l_list).mean(axis=0)
+            rn   = np.array(arr_r_list).mean(axis=0)
+            diff = rm - rn
+            t_mask = (times_ref >= x_min) & (times_ref <= x_max)
+            cond_vals.append(np.abs(rm[:, t_mask]).ravel())
+            cond_vals.append(np.abs(rn[:, t_mask]).ravel())
+            diff_vals.append(np.abs(diff[:, t_mask]).ravel())
+            n_loaded += 1
+
+    if not cond_vals:
+        print(f"  ⚠ [SECTION COLORBAR] [{label}] 無有效資料，各圖獨立計算")
+        return None, None
+
+    vmax_cond = np.percentile(np.concatenate(cond_vals), percentile)
+    vmax_diff = np.percentile(np.concatenate(diff_vals), percentile)
+
+    print(f"\n{'═'*62}")
+    print(f"  SECTION COLORBAR LOG  >>>  {label}")
+    print(f"  掃描: {len(roi_names)} ROI × {len(condition_pairs)} 條件對  (n_matrix={n_loaded})")
+    print(f"  vmax_cond = ±{vmax_cond:.4f} dB   ← 套用至所有 Condition 面板")
+    print(f"  vmax_diff = ±{vmax_diff:.4f} dB   ← 套用至所有 Difference 面板")
+    print(f"{'═'*62}\n")
+
+    return vmax_cond, vmax_diff
+
+
+def _compute_testing_pair_vmax(
+    subject_ids, pkl_dir, h5_dir,
+    lock_type, test_type, condition_pairs, roi_names,
+    x_min=-0.5, x_max=0.5,
+    percentile=95,
+    label='Testing Early/Late Section'
+):
+    """
+    計算 Testing Early/Late 比較的全域 vmax。
+
+    使用 _load_subject_testing_pair 正確載入 first/second pair 資料，
+    同時涵蓋 Early + Late × 所有 condition pair × 所有 ROI，
+    確保同一 Testing section 的所有投影片共用同一 colorbar。
+    """
+    cond_vals, diff_vals = [], []
+    n_loaded = 0
+
+    for roi_name in roi_names:
+        roi_lower = roi_name.lower()
+        for (c1, c2) in condition_pairs:
+            for pair in ('first', 'second'):
+                arr_l, arr_r = [], []
+                times_ref = None
+                for sid in subject_ids:
+                    try:
+                        e1, _, t, _, _ = _load_subject_testing_pair(
+                            pkl_dir, sid, lock_type, test_type, c1, roi_lower,
+                            pair=pair, h5_dir=h5_dir
+                        )
+                        arr_l.append(e1)
+                        if times_ref is None:
+                            times_ref = t
+                    except Exception:
+                        pass
+                    try:
+                        e2, _, _, _, _ = _load_subject_testing_pair(
+                            pkl_dir, sid, lock_type, test_type, c2, roi_lower,
+                            pair=pair, h5_dir=h5_dir
+                        )
+                        arr_r.append(e2)
+                    except Exception:
+                        pass
+
+                if not arr_l or not arr_r or times_ref is None:
+                    continue
+
+                rm   = np.array(arr_l).mean(axis=0)
+                rn   = np.array(arr_r).mean(axis=0)
+                diff = rm - rn
+                t_mask = (times_ref >= x_min) & (times_ref <= x_max)
+                cond_vals.append(np.abs(rm[:, t_mask]).ravel())
+                cond_vals.append(np.abs(rn[:, t_mask]).ravel())
+                diff_vals.append(np.abs(diff[:, t_mask]).ravel())
+                n_loaded += 1
+
+    if not cond_vals:
+        print(f"  ⚠ [SECTION COLORBAR] [{label}] 無有效資料，各圖獨立計算")
+        return None, None
+
+    vmax_cond = np.percentile(np.concatenate(cond_vals), percentile)
+    vmax_diff = np.percentile(np.concatenate(diff_vals), percentile)
+
+    print(f"\n{'═'*62}")
+    print(f"  SECTION COLORBAR LOG  >>>  {label}")
+    print(f"  掃描: {len(roi_names)} ROI × {len(condition_pairs)} 條件對 × 2 pair  (n_matrix={n_loaded})")
+    print(f"  vmax_cond = ±{vmax_cond:.4f} dB   ← Early/Late Condition 面板共用")
+    print(f"  vmax_diff = ±{vmax_diff:.4f} dB   ← Early/Late Difference 面板共用")
+    print(f"{'═'*62}\n")
+
+    return vmax_cond, vmax_diff
 
 
 def _load_h5_single_electrode(filepath, electrode_name):
@@ -377,8 +667,15 @@ def _plot_single_electrode_comparison(arr_left, arr_right, freqs, times,
                                        common_ids, suptitle, output_path,
                                        electrode_name,
                                        label_left='Regular', label_right='Random',
-                                       nave_list_left=None, nave_list_right=None):
-    """產生單一電極群體比較圖：left | right | Difference。"""
+                                       nave_list_left=None, nave_list_right=None,
+                                       vmax_cond=None, vmax_diff=None):
+    """產生單一電極群體比較圖：left | right | Difference。
+
+    vmax_cond / vmax_diff:
+        若提供，使用外部統一 colorbar（由電極 section 預掃描提供），
+        確保同一電極的三對 triplet 投影片共用同一色軸。
+        若為 None，各自從資料計算。
+    """
     n_sub      = len(common_ids)
     left_mean  = arr_left.mean(axis=0)
     right_mean = arr_right.mean(axis=0)
@@ -396,9 +693,12 @@ def _plot_single_electrode_comparison(arr_left, arr_right, freqs, times,
     x_min, x_max = -0.5, 0.5
     t_mask = (times >= x_min) & (times <= x_max)
 
-    combined  = np.concatenate([left_mean[:, t_mask].ravel(), right_mean[:, t_mask].ravel()])
-    vmax_cond = np.percentile(np.abs(combined), 95)
-    vmax_diff = np.percentile(np.abs(diff[:, t_mask].ravel()), 95)
+    # 外部 section vmax 優先；否則各自計算
+    if vmax_cond is None:
+        combined  = np.concatenate([left_mean[:, t_mask].ravel(), right_mean[:, t_mask].ravel()])
+        vmax_cond = np.percentile(np.abs(combined), 95)
+    if vmax_diff is None:
+        vmax_diff = np.percentile(np.abs(diff[:, t_mask].ravel()), 95)
     if vmax_cond < 1e-10: vmax_cond = 1e-10
     if vmax_diff < 1e-10: vmax_diff = 1e-10
 
@@ -435,7 +735,8 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                                          label_left='Regular', label_right='Random',
                                          condition_left='Regular', condition_right='Random',
                                          stim_h5_dir=None,
-                                         _triplet_expanded=False):
+                                         _triplet_expanded=False,
+                                         _electrode_vmaxes=None):
     """
     對指定電極執行群體單一電極 ERSP 分析。
     同時處理 Response-locked（h5 全通道）和 Stimulus-locked（h5 全通道，需先跑 option 15）。
@@ -459,6 +760,105 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
             ('regular_high', 'random_high', 'Regular High', 'Random High'),
             ('random_high',  'random_low',  'Random High',  'Random Low'),
         ]
+
+        # ── 電極 Section Colorbar 預掃描 ──
+        # 對每個電極計算四個全域 vmax：
+        #   cond     → 所有 condition 面板共用（Learning + Testing）
+        #   diff     → 所有 difference 面板共用（實際 diff 資料，非估算）
+        #   mp_cond  → Motor−Perceptual Diff 兩個條件面板共用（三對 triplet 共用）
+        #   mp_inter → Motor−Perceptual Interaction 面板共用（三對 triplet 共用）
+        _electrode_vmaxes = {}
+        x_min, x_max = -0.5, 0.5
+
+        _LEARNING_GROUPS_LABELS = ['Block7-11', 'Block12-16', 'Block17-21', 'Block22-26']
+        _all_conds_elec = list({c for pair in _pairs for c in pair[:2]})
+        _all_pair_tuples = [(cl, cr) for cl, cr, _, _ in _pairs]
+        _sp = stim_h5_path if stim_h5_dir else h5_path
+
+        for electrode in electrodes:
+            _cond_vals, _diff_vals = [], []
+            _mp_cond_vals, _mp_inter_vals = [], []
+
+            # ── 1. Learning 各 Block（Response + Stimulus）──
+            for blk_label in _LEARNING_GROUPS_LABELS:
+                for _cl_use, _cr_use in _all_pair_tuples:
+                    for sid in subject_ids:
+                        for _lk_path, _lk_key in [(h5_path, 'Response'), (_sp, 'Stimulus')]:
+                            fp_l = _lk_path / f'{sid}_{_lk_key}_Learning_{blk_label}_{_cl_use}_ERSP.h5'
+                            fp_r = _lk_path / f'{sid}_{_lk_key}_Learning_{blk_label}_{_cr_use}_ERSP.h5'
+                            try:
+                                if fp_l.exists():
+                                    el, _, t, _ = _load_h5_single_electrode(fp_l, electrode)
+                                    t_mask = (t >= x_min) & (t <= x_max)
+                                    _cond_vals.append(np.abs(el[:, t_mask]).ravel())
+                                    if fp_r.exists():
+                                        er, _, _, _ = _load_h5_single_electrode(fp_r, electrode)
+                                        _diff_vals.append(np.abs((el - er)[:, t_mask]).ravel())
+                                        _cond_vals.append(np.abs(er[:, t_mask]).ravel())
+                            except Exception:
+                                pass
+
+            # ── 2. Testing AllBlocks（Response + Stimulus × Motor + Perceptual）──
+            for _cn in ('MotorTest', 'PerceptualTest'):
+                for _cl_use, _cr_use in _all_pair_tuples:
+                    for sid in subject_ids:
+                        for _lk_path, _lk_key in [(h5_path, 'Response'), (_sp, 'Stimulus')]:
+                            fp_l = _lk_path / f'{sid}_{_lk_key}_{_cn}_AllBlocks_{_cl_use}_ERSP.h5'
+                            fp_r = _lk_path / f'{sid}_{_lk_key}_{_cn}_AllBlocks_{_cr_use}_ERSP.h5'
+                            try:
+                                if fp_l.exists():
+                                    el, _, t, _ = _load_h5_single_electrode(fp_l, electrode)
+                                    t_mask = (t >= x_min) & (t <= x_max)
+                                    _cond_vals.append(np.abs(el[:, t_mask]).ravel())
+                                    if fp_r.exists():
+                                        er, _, _, _ = _load_h5_single_electrode(fp_r, electrode)
+                                        _diff_vals.append(np.abs((el - er)[:, t_mask]).ravel())
+                                        _cond_vals.append(np.abs(er[:, t_mask]).ravel())
+                            except Exception:
+                                pass
+
+            # ── 3. Motor−Perceptual Diff（跨三對 triplet pair）──
+            for _cl_use, _cr_use in _all_pair_tuples:
+                for sid in subject_ids:
+                    for _lk_path, _lk_key in [(h5_path, 'Response'), (_sp, 'Stimulus')]:
+                        try:
+                            fp_ml = _lk_path / f'{sid}_{_lk_key}_MotorTest_AllBlocks_{_cl_use}_ERSP.h5'
+                            fp_pl = _lk_path / f'{sid}_{_lk_key}_PerceptualTest_AllBlocks_{_cl_use}_ERSP.h5'
+                            fp_mr = _lk_path / f'{sid}_{_lk_key}_MotorTest_AllBlocks_{_cr_use}_ERSP.h5'
+                            fp_pr = _lk_path / f'{sid}_{_lk_key}_PerceptualTest_AllBlocks_{_cr_use}_ERSP.h5'
+                            if fp_ml.exists() and fp_pl.exists():
+                                eml, _, t, _ = _load_h5_single_electrode(fp_ml, electrode)
+                                epl, _, _, _ = _load_h5_single_electrode(fp_pl, electrode)
+                                t_mask = (t >= x_min) & (t <= x_max)
+                                mp_l = eml - epl
+                                _mp_cond_vals.append(np.abs(mp_l[:, t_mask]).ravel())
+                                if fp_mr.exists() and fp_pr.exists():
+                                    emr, _, _, _ = _load_h5_single_electrode(fp_mr, electrode)
+                                    epr, _, _, _ = _load_h5_single_electrode(fp_pr, electrode)
+                                    mp_r   = emr - epr
+                                    inter  = mp_l - mp_r
+                                    _mp_cond_vals.append(np.abs(mp_r[:, t_mask]).ravel())
+                                    _mp_inter_vals.append(np.abs(inter[:, t_mask]).ravel())
+                        except Exception:
+                            pass
+
+            # ── 彙總 vmax ──
+            if _cond_vals:
+                _vc = np.percentile(np.concatenate(_cond_vals), 95)
+                _vd = np.percentile(np.concatenate(_diff_vals), 95) if _diff_vals else _vc * 0.4
+                _mp_vc = np.percentile(np.concatenate(_mp_cond_vals), 95) if _mp_cond_vals else None
+                _mp_vi = np.percentile(np.concatenate(_mp_inter_vals), 95) if _mp_inter_vals else None
+                _electrode_vmaxes[electrode] = (_vc, _vd, _mp_vc, _mp_vi)
+                print(f"\n  {'═'*60}")
+                print(f"  SECTION COLORBAR LOG  >>>  Electrode {electrode}")
+                print(f"  Cond/Diff: ±{_vc:.4f} / ±{_vd:.4f} dB  (Learning + Testing 合掃)")
+                if _mp_vc is not None:
+                    print(f"  Motor-Percept: ±{_mp_vc:.4f} / interaction ±{_mp_vi:.4f} dB")
+                print(f"  {'═'*60}")
+            else:
+                _electrode_vmaxes[electrode] = (None, None, None, None)
+                print(f"  ⚠ Electrode {electrode}: 無有效資料，各圖獨立計算")
+
         for _cl, _cr, _ll, _lr in _pairs:
             print(f"\n{'─'*60}")
             print(f"  單一電極群體分析：{_ll} vs {_lr}")
@@ -470,6 +870,7 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                 condition_left=_cl, condition_right=_cr,
                 stim_h5_dir=stim_h5_dir,
                 _triplet_expanded=True,
+                _electrode_vmaxes=_electrode_vmaxes,
             )
         return
 
@@ -480,6 +881,21 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
 
         elec_out = output_path / f'electrode_{electrode}'
         elec_out.mkdir(parents=True, exist_ok=True)
+
+        # 取得此電極的 section vmax（若有預掃描結果）
+        _evc, _evd = (None, None)
+        _emp_vc, _emp_vi = (None, None)
+        if _electrode_vmaxes:
+            _vals = _electrode_vmaxes.get(electrode, (None, None, None, None))
+            _evc, _evd = _vals[0], _vals[1]
+            _emp_vc = _vals[2] if len(_vals) > 2 else None
+            _emp_vi = _vals[3] if len(_vals) > 3 else None
+            if _evc is not None:
+                print(f"  [colorbar] 電極 {electrode}: cond=±{_evc:.4f} diff=±{_evd:.4f} dB", end='')
+                if _emp_vc is not None:
+                    print(f"  Motor-Percept=±{_emp_vc:.4f} / inter=±{_emp_vi:.4f} dB")
+                else:
+                    print()
 
         for lock_type in ('Response', 'Stimulus'):
             print(f"\n  [{lock_type}-locked]")
@@ -517,7 +933,8 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                     np.array(arr_l), np.array(arr_r), freqs, times,
                     ids_found, suptitle, elec_out / out_name, electrode,
                     label_left=label_left, label_right=label_right,
-                    nave_list_left=nave_l_list, nave_list_right=nave_r_list)
+                    nave_list_left=nave_l_list, nave_list_right=nave_r_list,
+                    vmax_cond=_evc, vmax_diff=_evd)
 
             # ── Epoch 4 vs Epoch 1 單一電極群體比較 ──────────────────
             _E1_GL = 'Block7-11'
@@ -555,7 +972,8 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                     _ids_e, _suptitle_e, elec_out / _out_e, electrode,
                     label_left=f'Epoch 4 ({_E4_GL})\n{_lbl}',
                     label_right=f'Epoch 1 ({_E1_GL})\n{_lbl}',
-                    nave_list_left=_nave_e4_l, nave_list_right=_nave_e1_l)
+                    nave_list_left=_nave_e4_l, nave_list_right=_nave_e1_l,
+                    vmax_cond=_evc, vmax_diff=_evd)
 
             # ── Testing ──
             for test_type in ('motor', 'perceptual'):
@@ -617,7 +1035,8 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                         np.array(arr_l), np.array(arr_r), freqs, times,
                         ids_found, suptitle, elec_out / out_name, electrode,
                         label_left=label_left, label_right=label_right,
-                        nave_list_left=nave_list_l, nave_list_right=nave_list_r)
+                        nave_list_left=nave_list_l, nave_list_right=nave_list_r,
+                        vmax_cond=_evc, vmax_diff=_evd)
 
                 # ── 各別 Block 群體圖 ──
                 all_block_labels = set()
@@ -653,7 +1072,8 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                         np.array(arr_l), np.array(arr_r), freqs, times,
                         ids_found, suptitle, elec_out / out_name, electrode,
                         label_left=label_left, label_right=label_right,
-                        nave_list_left=nave_list_l, nave_list_right=nave_list_r)
+                        nave_list_left=nave_list_l, nave_list_right=nave_list_r,
+                        vmax_cond=_evc, vmax_diff=_evd)
 
             # ── Pooled Testing (AllBlocks) 單一電極 ──
             for _test_type in ('motor', 'perceptual'):
@@ -692,7 +1112,8 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                     np.array(arr_l), np.array(arr_r), freqs, times,
                     ids_found, suptitle, elec_out / out_name, electrode,
                     label_left=label_left, label_right=label_right,
-                    nave_list_left=nave_list_l, nave_list_right=nave_list_r)
+                    nave_list_left=nave_list_l, nave_list_right=nave_list_r,
+                    vmax_cond=_evc, vmax_diff=_evd)
 
             # ── Motor-Perceptual Diff 單一電極 ──
             _motor_reg, _motor_ran = {}, {}
@@ -732,8 +1153,15 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                     _inter = _reg_m - _ran_m
                     _x_min, _x_max = -0.5, 0.5
                     _tm = (_times_mp >= _x_min) & (_times_mp <= _x_max)
-                    _vc = np.percentile(np.abs(np.concatenate([_reg_m[:, _tm].ravel(), _ran_m[:, _tm].ravel()])), 95)
-                    _vi = np.percentile(np.abs(_inter[:, _tm].ravel()), 95)
+
+                    # 使用預掃描的跨 triplet pair 共用 vmax；無則各自計算
+                    if _emp_vc is not None:
+                        _vc = _emp_vc
+                        _vi = _emp_vi if _emp_vi is not None else np.percentile(np.abs(_inter[:, _tm].ravel()), 95)
+                        print(f"    [colorbar] Motor-Perceptual Diff 使用 section vmax: ±{_vc:.4f} / inter=±{_vi:.4f} dB")
+                    else:
+                        _vc = np.percentile(np.abs(np.concatenate([_reg_m[:, _tm].ravel(), _ran_m[:, _tm].ravel()])), 95)
+                        _vi = np.percentile(np.abs(_inter[:, _tm].ravel()), 95)
                     _fig, _axes = plt.subplots(1, 3, figsize=(18, 5))
                     for _ax, _dat, _tit, _vm, _lv, _cbl in [
                         (_axes[0], _reg_m, f'{label_left} Motor-Perceptual\n(N={_n})', _vc, np.linspace(-_vc,_vc,20), 'Power diff (dB)'),
@@ -762,7 +1190,8 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
 
 def _plot_group_motor_perceptual_diff(arr_reg_diff, arr_ran_diff, freqs, times,
                                        common_ids, suptitle, output_path,
-                                       label_left='Regular', label_right='Random'):
+                                       label_left='Regular', label_right='Random',
+                                       vmax_cond=None, vmax_inter=None):
     """
     群體 Motor-Perceptual 差值比較圖。
     arr_reg_diff[i] = motor_reg[i] - percept_reg[i]  (n_sub, n_freqs, n_times)
@@ -771,6 +1200,10 @@ def _plot_group_motor_perceptual_diff(arr_reg_diff, arr_ran_diff, freqs, times,
     Left:   mean(arr_reg_diff) = label_left Motor - label_left Perceptual
     Center: mean(arr_ran_diff) = label_right Motor - label_right Perceptual
     Right:  Interaction = Left - Center
+
+    vmax_cond / vmax_inter:
+        若提供，使用外部統一 colorbar（三對 triplet pair 預掃描提供）。
+        若為 None，各自從資料計算。
     """
     n_sub      = len(common_ids)
     reg_mean   = arr_reg_diff.mean(axis=0)
@@ -780,9 +1213,12 @@ def _plot_group_motor_perceptual_diff(arr_reg_diff, arr_ran_diff, freqs, times,
     x_min, x_max = -0.5, 0.5
     t_mask = (times >= x_min) & (times <= x_max)
 
-    combined  = np.concatenate([reg_mean[:, t_mask].ravel(), ran_mean[:, t_mask].ravel()])
-    vmax_cond = np.percentile(np.abs(combined), 95)
-    vmax_int  = np.percentile(np.abs(interaction[:, t_mask].ravel()), 95)
+    if vmax_cond is None:
+        combined  = np.concatenate([reg_mean[:, t_mask].ravel(), ran_mean[:, t_mask].ravel()])
+        vmax_cond = np.percentile(np.abs(combined), 95)
+    vmax_int = vmax_inter
+    if vmax_int is None:
+        vmax_int = np.percentile(np.abs(interaction[:, t_mask].ravel()), 95)
     if vmax_cond < 1e-10: vmax_cond = 1e-10
     if vmax_int  < 1e-10: vmax_int  = 1e-10
 
@@ -970,9 +1406,19 @@ def group_ersp_analysis(subject_ids,
                         data_dir=None,
                         unified_colorbar=False,
                         display_label1=None,
-                        display_label2=None):
+                        display_label2=None,
+                        external_vmax_cond=None,
+                        external_vmax_diff=None,
+                        external_vmax_ep4e1_cond=None,
+                        external_vmax_ep4e1_diff=None):
     """
     群體 ERSP 分析。
+
+    external_vmax_cond / external_vmax_diff:
+        從 auto_group_ersp_analysis 的 section 預掃描傳入，
+        覆蓋內部 unified_colorbar 掃描，確保跨 ROI × 跨 condition pair 一致。
+    external_vmax_ep4e1_cond / external_vmax_ep4e1_diff:
+        專用於 Epoch4-vs-Epoch1 比較圖的外部 colorbar。
 
     Learning：按 Block 分組（Block7-11, 12-16, 17-21, 22-26），每組一張圖。
 
@@ -1029,10 +1475,15 @@ def group_ersp_analysis(subject_ids,
     # ============================================================
     if phase.lower() == 'learning':
 
-        # 統一 colorbar 掃描
+        # ── Colorbar 決策：外部優先，其次內部 unified_colorbar ──
         global_vmax_cond = None
         global_vmax_diff = None
-        if unified_colorbar:
+        if external_vmax_cond is not None and external_vmax_diff is not None:
+            global_vmax_cond = external_vmax_cond
+            global_vmax_diff = external_vmax_diff
+            print(f"  [colorbar] 使用外部 section-level colorbar:")
+            print(f"             vmax_cond=±{global_vmax_cond:.4f} dB  vmax_diff=±{global_vmax_diff:.4f} dB")
+        elif unified_colorbar:
             _xmin, _xmax = -0.5, 0.5
             _gvc, _gvd = 0.0, 0.0
             for (_bs, _be) in LEARNING_GROUPS:
@@ -1054,9 +1505,9 @@ def group_ersp_analysis(subject_ids,
             global_vmax_cond = _gvc if _gvc > 0 else None
             global_vmax_diff = _gvd if _gvd > 0 else None
             if global_vmax_cond is not None and global_vmax_diff is not None:
-                print(f"  統一 colorbar: vmax_cond={global_vmax_cond:.4f} dB, vmax_diff={global_vmax_diff:.4f} dB")
+                print(f"  [colorbar] 內部掃描: vmax_cond={global_vmax_cond:.4f} dB, vmax_diff={global_vmax_diff:.4f} dB")
             else:
-                print("  統一 colorbar: 無有效資料，跳過")
+                print("  [colorbar] 內部掃描: 無有效資料，各圖獨立計算")
 
         for (blk_start, blk_end) in LEARNING_GROUPS:
             group_label = f"Block{blk_start}-{blk_end}"
@@ -1163,10 +1614,17 @@ def group_ersp_analysis(subject_ids,
                     f"group_learning_{lock_type}_{roi_lower}"
                     f"_epoch4_vs_epoch1_{_cond}_comparison.png"
                 )
+                # Ep4-Ep1 專用 colorbar：外部傳入優先，其次各自獨立
+                _ep4e1_vc = external_vmax_ep4e1_cond
+                _ep4e1_vd = external_vmax_ep4e1_diff
+                if _ep4e1_vc is not None:
+                    print(f"  [colorbar] Ep4-Ep1 使用外部 colorbar: ±{_ep4e1_vc:.4f} / ±{_ep4e1_vd:.4f} dB")
                 _plot_group_block(
                     arr_e4, arr_e1, freqs_e, times_e,
                     common_e, suptitle_e, output_path / out_name_e,
                     do_permutation_test, n_permutations, lock_type=lock_type,
+                    vmax_cond=_ep4e1_vc,
+                    vmax_diff=_ep4e1_vd,
                     label_left=f'Epoch 4 ({_E4_LABEL})\n{_disp}',
                     label_right=f'Epoch 1 ({_E1_LABEL})\n{_disp}',
                     nave_list_left=nave_e4_c,
@@ -1190,10 +1648,15 @@ def group_ersp_analysis(subject_ids,
             'second': f'(Late {tt_cap} blocks)',
         }
 
-        # 統一 colorbar 掃描
+        # ── Colorbar 決策：外部優先，其次內部 unified_colorbar ──
         global_vmax_cond = None
         global_vmax_diff = None
-        if unified_colorbar:
+        if external_vmax_cond is not None and external_vmax_diff is not None:
+            global_vmax_cond = external_vmax_cond
+            global_vmax_diff = external_vmax_diff
+            print(f"  [colorbar] 使用外部 section-level colorbar:")
+            print(f"             vmax_cond=±{global_vmax_cond:.4f} dB  vmax_diff=±{global_vmax_diff:.4f} dB")
+        elif unified_colorbar:
             _xmin, _xmax = -0.5, 0.5
             _gvc, _gvd = 0.0, 0.0
             for _pair in ('first', 'second'):
@@ -1228,13 +1691,9 @@ def group_ersp_analysis(subject_ids,
             global_vmax_cond = _gvc if _gvc > 0 else None
             global_vmax_diff = _gvd if _gvd > 0 else None
             if global_vmax_cond is not None and global_vmax_diff is not None:
-                print(f"  統一 colorbar: vmax_cond={global_vmax_cond:.4f} dB, vmax_diff={global_vmax_diff:.4f} dB")
+                print(f"  [colorbar] 內部掃描: vmax_cond={global_vmax_cond:.4f} dB, vmax_diff={global_vmax_diff:.4f} dB")
             else:
-                print("  統一 colorbar: 無有效資料，跳過")
-            if global_vmax_cond is not None and global_vmax_diff is not None:
-                print(f"  統一 colorbar: vmax_cond={global_vmax_cond:.4f} dB, vmax_diff={global_vmax_diff:.4f} dB")
-            else:
-                print("  統一 colorbar: 無有效資料，跳過")
+                print("  [colorbar] 內部掃描: 無有效資料，各圖獨立計算")
         for pair_key, pair_desc in pair_labels.items():
 
             print(f"\n{'─'*60}")
@@ -1424,6 +1883,72 @@ def auto_group_ersp_analysis(subject_ids,
     print(f"Total {total} combinations × {len(condition_pairs)} pairs")
     print("=" * 70)
 
+    # ============================================================
+    # Section-level colorbar 預掃描
+    # ============================================================
+    # 為每個 (phase × lock_type) section 預先計算全域 vmax，
+    # 涵蓋所有 condition_pair × ROI，確保同一節的所有投影片共用同一 colorbar。
+    # ─────────────────────────────────────────────────────────────
+    _ALL_ROIS   = [r.lower() for r in ROI_GROUPS.keys()]
+    _ALL_BLOCKS = [f"Block{bs}-{be}" for bs, be in LEARNING_GROUPS]
+    # 所有出現過的條件（用於 Ep4-Ep1 掃描）
+    _all_conds  = list({c for pair in condition_pairs for c in pair})
+
+    _section_vmaxes = {}  # key: (phase, lock_type) → (vmax_cond, vmax_diff)
+    _ep4e1_vmaxes   = {}  # key: lock_type → (vmax_cond, vmax_diff)
+    _allblocks_vmaxes = {}  # key: (lock_type, test_type) → (vmax_cond, vmax_diff)
+
+    if unified_colorbar:
+        print(f"\n{'█'*62}")
+        print(f"  正在預掃描 Section-level Colorbar（請稍候...）")
+        print(f"{'█'*62}")
+
+        # ── Learning sections（每個 lock_type）──
+        for _lk in ['stimulus', 'response']:
+            _lbl = f"Learning | {_lk.capitalize()}-locked  [所有Epoch × 所有條件對 × 所有ROI]"
+            _vc, _vd = _compute_block_section_vmax(
+                subject_ids, pkl_dir, h5_dir,
+                _lk, 'learning', _ALL_BLOCKS,
+                condition_pairs, _ALL_ROIS,
+                test_type=None, label=_lbl
+            )
+            _section_vmaxes[('learning', _lk)] = (_vc, _vd)
+
+            # Epoch4-vs-Epoch1 section
+            _lbl_e = f"Epoch4-Epoch1 | {_lk.capitalize()}-locked  [所有條件 × 所有ROI]"
+            _vc_e, _vd_e = _compute_epoch_diff_section_vmax(
+                subject_ids, pkl_dir, h5_dir,
+                _lk, _all_conds, _ALL_ROIS,
+                label=_lbl_e
+            )
+            _ep4e1_vmaxes[_lk] = (_vc_e, _vd_e)
+
+        # ── Testing sections（每個 lock_type × test_type）──
+        for _lk in ['stimulus', 'response']:
+            for _tt in ['motor', 'perceptual']:
+                # Early/Late pair vmax（用正確的 _load_subject_testing_pair 載入）
+                _lbl_pair = f"Testing {_tt.capitalize()} Early/Late | {_lk.capitalize()}-locked"
+                _vc_pair, _vd_pair = _compute_testing_pair_vmax(
+                    subject_ids, pkl_dir, h5_dir,
+                    _lk, _tt, condition_pairs, _ALL_ROIS,
+                    label=_lbl_pair
+                )
+                _section_vmaxes[(_tt, _lk)] = (_vc_pair, _vd_pair)
+
+                # AllBlocks Testing vmax（主圖用，獨立計算）
+                _lbl_ab = f"Testing AllBlocks {_tt.capitalize()} | {_lk.capitalize()}-locked"
+                _vc_ab, _vd_ab = _compute_allblocks_testing_vmax(
+                    subject_ids, pkl_dir, h5_dir,
+                    _lk, _tt, condition_pairs, _ALL_ROIS,
+                    label=_lbl_ab
+                )
+                _allblocks_vmaxes[(_lk, _tt)] = (_vc_ab, _vd_ab)
+
+        print(f"\n{'█'*62}")
+        print(f"  Section Colorbar 預掃描完成")
+        print(f"  （在 Log 中搜尋「SECTION COLORBAR LOG」可驗證各節 vmax）")
+        print(f"{'█'*62}\n")
+
     all_combo_results = {}
     done = 0
     skipped = 0
@@ -1442,26 +1967,40 @@ def auto_group_ersp_analysis(subject_ids,
         print(f"  [{i}/{total}]  {key}")
         print(f"{'#'*70}")
 
+        # 從預掃描結果取得本 section 的 vmax
+        if unified_colorbar:
+            _sect_key = (test_type if test_type else 'learning', lock_type)
+            _ext_vc, _ext_vd = _section_vmaxes.get(_sect_key, (None, None))
+            _ext_e1_vc, _ext_e1_vd = _ep4e1_vmaxes.get(lock_type, (None, None))
+            if _ext_vc is not None:
+                print(f"  → section colorbar: vmax_cond=±{_ext_vc:.4f} dB  vmax_diff=±{_ext_vd:.4f} dB")
+        else:
+            _ext_vc = _ext_vd = _ext_e1_vc = _ext_e1_vd = None
+
         for _c1, _c2 in condition_pairs:
             _pair_label = f"{_c1}_vs_{_c2}"
             _sub_dir_pair = str(Path(sub_dir) / _pair_label)
             try:
                 result = group_ersp_analysis(
-                    subject_ids         = subject_ids,
-                    condition1          = _c1,
-                    condition2          = _c2,
-                    phase               = phase,
-                    lock_type           = lock_type,
-                    roi_name            = roi_name,
-                    pkl_dir             = pkl_dir,
-                    h5_dir              = h5_dir,
-                    output_dir          = _sub_dir_pair,
-                    do_permutation_test = do_permutation_test,
-                    n_permutations      = n_permutations,
-                    test_type           = test_type,
-                    unified_colorbar    = unified_colorbar,
-                    display_label1      = display_label1,
-                    display_label2      = display_label2,
+                    subject_ids              = subject_ids,
+                    condition1               = _c1,
+                    condition2               = _c2,
+                    phase                    = phase,
+                    lock_type                = lock_type,
+                    roi_name                 = roi_name,
+                    pkl_dir                  = pkl_dir,
+                    h5_dir                   = h5_dir,
+                    output_dir               = _sub_dir_pair,
+                    do_permutation_test      = do_permutation_test,
+                    n_permutations           = n_permutations,
+                    test_type                = test_type,
+                    unified_colorbar         = unified_colorbar,
+                    display_label1           = display_label1,
+                    display_label2           = display_label2,
+                    external_vmax_cond       = _ext_vc,
+                    external_vmax_diff       = _ext_vd,
+                    external_vmax_ep4e1_cond = _ext_e1_vc,
+                    external_vmax_ep4e1_diff = _ext_e1_vd,
                 )
                 all_combo_results[f"{key}_{_pair_label}"] = result
                 n_blocks = len(result)
@@ -1539,10 +2078,16 @@ def auto_group_ersp_analysis(subject_ids,
                         f'{lock_cap}-locked | {roi_cap} ROI'
                     )
                     out_name_p = f'group_pooled_{test_type}_{lock_type}_{roi_lower}_{condition1}_vs_{condition2}_comparison.png'
+                    # AllBlocks 使用預掃描的 section vmax
+                    _ab_vc, _ab_vd = _allblocks_vmaxes.get((lock_type, test_type), (None, None)) if unified_colorbar else (None, None)
+                    if _ab_vc is not None:
+                        print(f"  [colorbar] AllBlocks 使用 section colorbar: ±{_ab_vc:.4f} / ±{_ab_vd:.4f} dB")
                     _plot_group_block(
                         arr_l, arr_r, freqs_p, times_p,
                         common, suptitle_p, Path(sub_dir_p) / out_name_p,
                         False, 1000, lock_type=lock_type,
+                        vmax_cond=_ab_vc,
+                        vmax_diff=_ab_vd,
                         label_left=display_label1 or condition1,
                         label_right=display_label2 or condition2,
                         nave_list_left=nave_left_list,
@@ -1552,6 +2097,48 @@ def auto_group_ersp_analysis(subject_ids,
                 # ── Motor-Perceptual Diff（三對）──
                 lock_cap = lock_type.capitalize()
                 _allblocks_dir_mp = Path(pkl_dir) if lock_type == 'stimulus' else Path(h5_dir)
+
+                # 預掃描：跨三對 triplet pair 計算共用 vmax
+                _mp_cond_pre, _mp_inter_pre = [], []
+                for _c1_pre, _c2_pre in condition_pairs:
+                    _mr_pre, _mn_pre, _pr_pre, _pn_pre = {}, {}, {}, {}
+                    for sid in subject_ids:
+                        for _cn_pre, _sr, _sn in [('MotorTest', _mr_pre, _mn_pre),
+                                                   ('PerceptualTest', _pr_pre, _pn_pre)]:
+                            fp_l = _allblocks_dir_mp / f'{sid}_{lock_cap}_{_cn_pre}_AllBlocks_{_c1_pre}_ERSP.h5'
+                            fp_r = _allblocks_dir_mp / f'{sid}_{lock_cap}_{_cn_pre}_AllBlocks_{_c2_pre}_ERSP.h5'
+                            if fp_l.exists():
+                                try: _sr[sid], _, _, _ = _load_h5_response(fp_l, roi_name)
+                                except Exception: pass
+                            if fp_r.exists():
+                                try: _sn[sid], _, _, _ = _load_h5_response(fp_r, roi_name)
+                                except Exception: pass
+                    _cm_pre = [s for s in subject_ids
+                               if s in _mr_pre and s in _mn_pre
+                               and s in _pr_pre and s in _pn_pre]
+                    if not _cm_pre:
+                        continue
+                    _fp_ref_pre = _allblocks_dir_mp / f'{_cm_pre[0]}_{lock_cap}_MotorTest_AllBlocks_{_c1_pre}_ERSP.h5'
+                    if not _fp_ref_pre.exists():
+                        continue
+                    try:
+                        _, _fq_pre, _tm_pre, _ = _load_h5_response(_fp_ref_pre, roi_name)
+                    except Exception:
+                        continue
+                    _t_mask_pre = (_tm_pre >= -0.5) & (_tm_pre <= 0.5)
+                    _rd = np.array([_mr_pre[s] - _pr_pre[s] for s in _cm_pre]).mean(axis=0)
+                    _nd = np.array([_mn_pre[s] - _pn_pre[s] for s in _cm_pre]).mean(axis=0)
+                    _mp_cond_pre.append(np.abs(_rd[:, _t_mask_pre]).ravel())
+                    _mp_cond_pre.append(np.abs(_nd[:, _t_mask_pre]).ravel())
+                    _mp_inter_pre.append(np.abs((_rd - _nd)[:, _t_mask_pre]).ravel())
+
+                _mp_vmax_cond  = float(np.percentile(np.concatenate(_mp_cond_pre),  95)) if _mp_cond_pre  else None
+                _mp_vmax_inter = float(np.percentile(np.concatenate(_mp_inter_pre), 95)) if _mp_inter_pre else None
+                if _mp_vmax_cond is not None:
+                    print(f"\n  {'═'*58}")
+                    print(f"  SECTION COLORBAR LOG  >>>  Motor-Percept Diff | {lock_type} | {roi_lower}")
+                    print(f"  vmax_cond=±{_mp_vmax_cond:.4f} dB  vmax_inter=±{_mp_vmax_inter:.4f} dB")
+                    print(f"  {'═'*58}")
 
                 for _c1, _c2 in condition_pairs:
                     motor_reg, motor_ran = {}, {}
@@ -1603,6 +2190,7 @@ def auto_group_ersp_analysis(subject_ids,
                         arr_reg_diff, arr_ran_diff, freqs_mp, times_mp,
                         common_mp, suptitle_mp, Path(sub_dir_mp) / out_name_mp,
                         label_left=_c1, label_right=_c2,
+                        vmax_cond=_mp_vmax_cond, vmax_inter=_mp_vmax_inter,
                     )
 
         if any(c['lock_type'] == 'stimulus' for c in combos):

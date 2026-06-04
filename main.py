@@ -1426,9 +1426,14 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                     continue
 
                 print("\nColorbar 範圍設定:")
-                print("  1. 每個 Block 各自計算（預設）")
-                print("  2. 同一 ROI 跨所有 Block 統一（方便比較 Early vs Late）")
-                cb_choice = input("請選擇 (1/2) [1]: ").strip() or '1'
+                print("  1. 每個圖各自計算（預設）")
+                print("  2. Section-level 統一（推薦）：")
+                print("     同一節內所有投影片共用同一 colorbar，")
+                print("     涵蓋 所有 condition pair × Motor ROI × Perceptual ROI")
+                print("     ─ Learning Ep1/Ep2/Ep3/Ep4 共用一組")
+                print("     ─ Learning Ep4-Ep1 共用一組")
+                print("     ─ Testing Motor / Perceptual 各共用一組")
+                cb_choice = input("請選擇 (1/2) [2]: ").strip() or '2'
                 unified_colorbar = (cb_choice == '2')
 
                 # ── 詢問是否跳過群體 ROI 分析，直接進行單一電極分析 ──
