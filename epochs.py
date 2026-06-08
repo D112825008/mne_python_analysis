@@ -1119,8 +1119,8 @@ def create_asrt_epochs(raw, subject_id, behavior_df=None, trial_classification='
           - 若找不到對應 Stimulus（理論上不應發生），跳過該 Response event
         """
         block_counter = {}  # 只用於 Stimulus 建立 _stim_sample_to_tib
+        _seen_resp_samples = set()  # 用於 Response 去重，避免重複 trigger 進 trial list
         trial_list = []
-        stim_event_codes = [41, 42, 43, 44, 46, 47, 48, 49]
 
         for sample, _, code in events:
             if code not in event_codes:
@@ -1133,7 +1133,9 @@ def create_asrt_epochs(raw, subject_id, behavior_df=None, trial_classification='
                 continue
 
             if epoch_type == 'stim':
-                # Stimulus：用 block_counter 建立 tib，並記錄對照表
+                # ✅ 修復：重複 sample 直接跳過，避免 counter 多增一次
+                if int(sample) in _stim_sample_to_tib:
+                    continue
                 block_counter.setdefault(block_num, 0)
                 tib = block_counter[block_num]
                 block_counter[block_num] += 1
@@ -1143,15 +1145,18 @@ def create_asrt_epochs(raw, subject_id, behavior_df=None, trial_classification='
             else:
                 # Response：用對應的 Stimulus 的 tib，不用獨立 counter
                 # 用 RANDOM_STIM + REGULAR_STIM（已重映射的 MNE code），不用寫死原始 trigger 值
+                if int(sample) in _seen_resp_samples:   # ← 重複 resp sample 直接跳過
+                    continue
                 _stim_codes_for_resp = RANDOM_STIM + REGULAR_STIM
                 stim_before = [(s, c) for s, _, c in events
-                               if c in _stim_codes_for_resp and s < sample]
+                            if c in _stim_codes_for_resp and s < sample]
                 if not stim_before:
-                    continue  # 沒有前置 Stimulus，跳過
+                    continue
                 stim_sample = int(stim_before[-1][0])
                 if stim_sample not in _stim_sample_to_tib:
-                    continue  # Stimulus 不在分析範圍，跳過
+                    continue
                 block_num, tib = _stim_sample_to_tib[stim_sample]
+                _seen_resp_samples.add(int(sample))     # ← 記錄已處理
                 resp_sample = int(sample)
 
             random_codes = RANDOM_STIM if epoch_type == 'stim' else RANDOM_RESP
@@ -1355,13 +1360,12 @@ def create_asrt_epochs(raw, subject_id, behavior_df=None, trial_classification='
             _print_phase_breakdown(epochs_resp, 'Response-locked')
 
         # resp_to_stim_map（按 sample 最近配對）
+        # ✅ 修復（用 post-dedup 的 MNE Epochs events → 索引與實際 epochs 一致）
         resp_to_stim_map = {}
         if epochs_resp is not None:
-            stim_samples = np.array([t['sample'] for t in stim_trials
-                                     if t['trial_type'] is not None])
-            resp_samples_all = [t['sample'] for t in resp_trials
-                                if t['trial_type'] is not None]
-            for resp_i, rs in enumerate(resp_samples_all):
+            stim_samples = epochs_stim.events[:, 0]      # 1161 筆，index 0–1160
+            resp_samples_arr = epochs_resp.events[:, 0]  # 1131 筆，index 0–1130
+            for resp_i, rs in enumerate(resp_samples_arr):
                 before = stim_samples[stim_samples < rs]
                 if len(before):
                     stim_i = int(np.where(stim_samples == before[-1])[0][0])
