@@ -919,6 +919,24 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
             print(f"    {electrode} | learning: ±{vc_c:.4f} / ±{vd_c:.4f} dB"
                   f"  (R=±{vc_r or 0:.4f}, S=±{vc_s or 0:.4f})")
         print(f"  {'─'*60}")
+
+        # Motor-Perceptual Diff 也統一 Response ↔ Stimulus
+        # 論述「Response-locked 出現 Theta ERD、Stimulus-locked 出現相反 Alpha ERS」，
+        # 統一後可直接比較兩個 lock type 的效果幅度。
+        print(f"\n  {'─'*60}")
+        print(f"  Cross-lock vmax 統一（Response ↔ Stimulus，mp_diff phase）")
+        for electrode in electrodes:
+            vc_r, vd_r = _electrode_vmaxes.get((electrode, 'Response', 'mp_diff'), (None, None))
+            vc_s, vd_s = _electrode_vmaxes.get((electrode, 'Stimulus', 'mp_diff'), (None, None))
+            if vc_r is None and vc_s is None:
+                continue
+            vc_c = max(v for v in [vc_r, vc_s] if v is not None)
+            vd_c = max(v for v in [vd_r, vd_s] if v is not None)
+            _electrode_vmaxes[(electrode, 'Response', 'mp_diff')] = (vc_c, vd_c)
+            _electrode_vmaxes[(electrode, 'Stimulus', 'mp_diff')] = (vc_c, vd_c)
+            print(f"    {electrode} | mp_diff: ±{vc_c:.4f} / ±{vd_c:.4f} dB"
+                  f"  (R=±{vc_r or 0:.4f}, S=±{vc_s or 0:.4f})")
+        print(f"  {'─'*60}")
         for _cl, _cr, _ll, _lr in _pairs:
             print(f"\n{'─'*60}")
             print(f"  單一電極群體分析：{_ll} vs {_lr}")
@@ -2089,6 +2107,48 @@ def auto_group_ersp_analysis(subject_ids,
                     )
                     _allblocks_vmaxes[(_lk, _tt, _roi)] = (_vc_ab, _vd_ab)
 
+        # ── AllBlocks colorbar 統一：Motor Test ↔ Perceptual Test（同 lock type）──
+        # 論述「Motor Test 有 Theta ERD 但 Perceptual Test 沒有」，
+        # 兩個測驗條件必須在同一個 colorbar 下才有視覺意義。
+        print(f"\n  {'─'*60}")
+        print(f"  AllBlocks vmax 統一 Step 1：Motor Test ↔ Perceptual Test（per lock type × ROI）")
+        _all_rois_ab = set(roi for (lk, tt, roi) in _allblocks_vmaxes)
+        for _lk in ['stimulus', 'response']:
+            for _roi in _all_rois_ab:
+                vc_m, vd_m = _allblocks_vmaxes.get((_lk, 'motor',      _roi), (None, None))
+                vc_p, vd_p = _allblocks_vmaxes.get((_lk, 'perceptual', _roi), (None, None))
+                if vc_m is None and vc_p is None:
+                    continue
+                vc_c = max(v for v in [vc_m, vc_p] if v is not None)
+                vd_c = max(v for v in [vd_m, vd_p] if v is not None)
+                _allblocks_vmaxes[(_lk, 'motor',      _roi)] = (vc_c, vd_c)
+                _allblocks_vmaxes[(_lk, 'perceptual', _roi)] = (vc_c, vd_c)
+
+        # ── AllBlocks colorbar 統一 Step 2：Motor ROI ↔ Perceptual ROI 配對（同 lock type × test type）──
+        # 論述「Motor Test Response-locked 中，Motor ROI 有 Theta ERD 但 Perceptual ROI 沒有」，
+        # 同一測驗條件同一 lock type 下的 Motor ROI 和 Perceptual ROI 需共用 colorbar。
+        print(f"  AllBlocks vmax 統一 Step 2：Motor ROI ↔ Perceptual ROI 配對（per lock type × test type）")
+        _AB_ROI_PAIRS = [
+            ('motor',          'perceptual'),
+            ('motor_frontal',  'perceptual_frontal'),
+            ('motor_central',  'perceptual_central'),
+            ('motor_parietal', 'perceptual_parietal'),
+            ('motor_occipital','perceptual_occipital'),
+        ]
+        for _lk in ['stimulus', 'response']:
+            for _tt in ['motor', 'perceptual']:
+                for _roi_m, _roi_p in _AB_ROI_PAIRS:
+                    vc_m, vd_m = _allblocks_vmaxes.get((_lk, _tt, _roi_m), (None, None))
+                    vc_p, vd_p = _allblocks_vmaxes.get((_lk, _tt, _roi_p), (None, None))
+                    if vc_m is None and vc_p is None:
+                        continue
+                    vc_c = max(v for v in [vc_m, vc_p] if v is not None)
+                    vd_c = max(v for v in [vd_m, vd_p] if v is not None)
+                    _allblocks_vmaxes[(_lk, _tt, _roi_m)] = (vc_c, vd_c)
+                    _allblocks_vmaxes[(_lk, _tt, _roi_p)] = (vc_c, vd_c)
+                    print(f"    {_lk} | {_tt} | {_roi_m}↔{_roi_p}: ±{vc_c:.4f} dB")
+        print(f"  {'─'*60}")
+
         print(f"\n{'█'*62}")
         print(f"  Section Colorbar 預掃描完成")
         print(f"  （在 Log 中搜尋「SECTION COLORBAR LOG」可驗證各節 vmax）")
@@ -2173,6 +2233,92 @@ def auto_group_ersp_analysis(subject_ids,
     print(f"  Pooled Testing + Motor-Perceptual Diff 群體分析")
     print(f"{'#'*70}")
 
+    # ── Motor-Perceptual Diff vmax 獨立預掃描（統一 Response ↔ Stimulus colorbar）──
+    # 因為 MP diff 的論述需要比較 Response-locked 和 Stimulus-locked 的效果幅度，
+    # 兩個 lock type 必須共用 colorbar 才有視覺意義。
+    # 預掃描在主迴圈前獨立完成，主迴圈直接使用統一後的 vmax。
+    print(f"\n  {'█'*62}")
+    print(f"  Motor-Perceptual Diff vmax 預掃描（Response ↔ Stimulus 統一）")
+    print(f"  {'█'*62}")
+    _mp_vmaxes_pre = {}
+    for _lk_mp in ['stimulus', 'response']:
+        _lk_cap_mp = _lk_mp.capitalize()
+        _adir_mp   = Path(pkl_dir) if _lk_mp == 'stimulus' else Path(h5_dir)
+        for _roi_mp in [r.lower() for r in ROI_GROUPS.keys()]:
+            _mc_vals, _mi_vals = [], []
+            for _c1p, _c2p in condition_pairs:
+                _mr_p, _mn_p, _pr_p, _pn_p = {}, {}, {}, {}
+                for sid in subject_ids:
+                    for _cn_p, _sr_p, _sn_p in [
+                        ('MotorTest',     _mr_p, _mn_p),
+                        ('PerceptualTest', _pr_p, _pn_p),
+                    ]:
+                        for _cd_p, _st_p in [(_c1p, _sr_p), (_c2p, _sn_p)]:
+                            fp_p = _adir_mp / f'{sid}_{_lk_cap_mp}_{_cn_p}_AllBlocks_{_cd_p}_ERSP.h5'
+                            if fp_p.exists():
+                                try:
+                                    _ap, _, _, _ = _load_h5_response(fp_p, _roi_mp)
+                                    _st_p[sid] = _ap
+                                except Exception:
+                                    pass
+                _cm_p = [s for s in subject_ids
+                         if s in _mr_p and s in _mn_p and s in _pr_p and s in _pn_p]
+                if not _cm_p:
+                    continue
+                fp_ref_p = _adir_mp / f'{_cm_p[0]}_{_lk_cap_mp}_MotorTest_AllBlocks_{_c1p}_ERSP.h5'
+                if not fp_ref_p.exists():
+                    continue
+                try:
+                    _, _, _tm_p, _ = _load_h5_response(fp_ref_p, _roi_mp)
+                except Exception:
+                    continue
+                _t_mask_p = (_tm_p >= -0.5) & (_tm_p <= 0.5)
+                _rd_p = np.array([_mr_p[s] - _pr_p[s] for s in _cm_p]).mean(axis=0)
+                _nd_p = np.array([_mn_p[s] - _pn_p[s] for s in _cm_p]).mean(axis=0)
+                _mc_vals.append(np.abs(_rd_p[:, _t_mask_p]).ravel())
+                _mc_vals.append(np.abs(_nd_p[:, _t_mask_p]).ravel())
+                _mi_vals.append(np.abs((_rd_p - _nd_p)[:, _t_mask_p]).ravel())
+            _vc_mp = float(np.percentile(np.concatenate(_mc_vals), 95)) if _mc_vals else None
+            _vi_mp = float(np.percentile(np.concatenate(_mi_vals), 95)) if _mi_vals else None
+            _mp_vmaxes_pre[(_roi_mp, _lk_mp)] = (_vc_mp, _vi_mp)
+
+    # Harmonize Step 1：Response ↔ Stimulus（同 ROI）
+    print(f"  {'─'*60}")
+    print(f"  MP Diff vmax harmonization Step 1（Response ↔ Stimulus per ROI）:")
+    for _roi_h in [r.lower() for r in ROI_GROUPS.keys()]:
+        _vc_r, _vi_r = _mp_vmaxes_pre.get((_roi_h, 'response'), (None, None))
+        _vc_s, _vi_s = _mp_vmaxes_pre.get((_roi_h, 'stimulus'), (None, None))
+        if _vc_r is None and _vc_s is None:
+            continue
+        _vc_c = max(v for v in [_vc_r, _vc_s] if v is not None)
+        _vi_c = max(v for v in [_vi_r, _vi_s] if v is not None)
+        _mp_vmaxes_pre[(_roi_h, 'response')] = (_vc_c, _vi_c)
+        _mp_vmaxes_pre[(_roi_h, 'stimulus')] = (_vc_c, _vi_c)
+
+    # Harmonize Step 2：Motor ROI ↔ Perceptual ROI 配對（同 lock type）
+    # 論述「MP diff Response-locked 中 Motor ROI 和 Perceptual ROI 的效果方向」，
+    # 兩個 ROI 需共用 colorbar 才能比較幅度。
+    print(f"  MP Diff vmax harmonization Step 2（Motor ROI ↔ Perceptual ROI per lock type）:")
+    _MP_ROI_PAIRS = [
+        ('motor',          'perceptual'),
+        ('motor_frontal',  'perceptual_frontal'),
+        ('motor_central',  'perceptual_central'),
+        ('motor_parietal', 'perceptual_parietal'),
+        ('motor_occipital','perceptual_occipital'),
+    ]
+    for _lk_mp_h in ['stimulus', 'response']:
+        for _roi_m_h, _roi_p_h in _MP_ROI_PAIRS:
+            _vc_m_h, _vi_m_h = _mp_vmaxes_pre.get((_roi_m_h, _lk_mp_h), (None, None))
+            _vc_p_h, _vi_p_h = _mp_vmaxes_pre.get((_roi_p_h, _lk_mp_h), (None, None))
+            if _vc_m_h is None and _vc_p_h is None:
+                continue
+            _vc_c2 = max(v for v in [_vc_m_h, _vc_p_h] if v is not None)
+            _vi_c2 = max(v for v in [_vi_m_h, _vi_p_h] if v is not None)
+            _mp_vmaxes_pre[(_roi_m_h, _lk_mp_h)] = (_vc_c2, _vi_c2)
+            _mp_vmaxes_pre[(_roi_p_h, _lk_mp_h)] = (_vc_c2, _vi_c2)
+            print(f"    {_lk_mp_h} | {_roi_m_h}↔{_roi_p_h}: ±{_vc_c2:.4f} / inter=±{_vi_c2:.4f} dB")
+    print(f"  {'─'*60}\n")
+
     for lock_type in ['stimulus', 'response']:
         for roi_name in [r.lower() for r in ROI_GROUPS.keys()]:
             roi_lower = roi_name
@@ -2250,46 +2396,12 @@ def auto_group_ersp_analysis(subject_ids,
                 lock_cap = lock_type.capitalize()
                 _allblocks_dir_mp = Path(pkl_dir) if lock_type == 'stimulus' else Path(h5_dir)
 
-                # 預掃描：跨三對 triplet pair 計算共用 vmax
-                _mp_cond_pre, _mp_inter_pre = [], []
-                for _c1_pre, _c2_pre in condition_pairs:
-                    _mr_pre, _mn_pre, _pr_pre, _pn_pre = {}, {}, {}, {}
-                    for sid in subject_ids:
-                        for _cn_pre, _sr, _sn in [('MotorTest', _mr_pre, _mn_pre),
-                                                   ('PerceptualTest', _pr_pre, _pn_pre)]:
-                            fp_l = _allblocks_dir_mp / f'{sid}_{lock_cap}_{_cn_pre}_AllBlocks_{_c1_pre}_ERSP.h5'
-                            fp_r = _allblocks_dir_mp / f'{sid}_{lock_cap}_{_cn_pre}_AllBlocks_{_c2_pre}_ERSP.h5'
-                            if fp_l.exists():
-                                try: _sr[sid], _, _, _ = _load_h5_response(fp_l, roi_name)
-                                except Exception: pass
-                            if fp_r.exists():
-                                try: _sn[sid], _, _, _ = _load_h5_response(fp_r, roi_name)
-                                except Exception: pass
-                    _cm_pre = [s for s in subject_ids
-                               if s in _mr_pre and s in _mn_pre
-                               and s in _pr_pre and s in _pn_pre]
-                    if not _cm_pre:
-                        continue
-                    _fp_ref_pre = _allblocks_dir_mp / f'{_cm_pre[0]}_{lock_cap}_MotorTest_AllBlocks_{_c1_pre}_ERSP.h5'
-                    if not _fp_ref_pre.exists():
-                        continue
-                    try:
-                        _, _fq_pre, _tm_pre, _ = _load_h5_response(_fp_ref_pre, roi_name)
-                    except Exception:
-                        continue
-                    _t_mask_pre = (_tm_pre >= -0.5) & (_tm_pre <= 0.5)
-                    _rd = np.array([_mr_pre[s] - _pr_pre[s] for s in _cm_pre]).mean(axis=0)
-                    _nd = np.array([_mn_pre[s] - _pn_pre[s] for s in _cm_pre]).mean(axis=0)
-                    _mp_cond_pre.append(np.abs(_rd[:, _t_mask_pre]).ravel())
-                    _mp_cond_pre.append(np.abs(_nd[:, _t_mask_pre]).ravel())
-                    _mp_inter_pre.append(np.abs((_rd - _nd)[:, _t_mask_pre]).ravel())
-
-                _mp_vmax_cond  = float(np.percentile(np.concatenate(_mp_cond_pre),  95)) if _mp_cond_pre  else None
-                _mp_vmax_inter = float(np.percentile(np.concatenate(_mp_inter_pre), 95)) if _mp_inter_pre else None
+                # MP vmax 從預掃描結果取得（已在主迴圈前完成 harmonization）
+                _mp_vmax_cond, _mp_vmax_inter = _mp_vmaxes_pre.get((roi_name, lock_type), (None, None))
                 if _mp_vmax_cond is not None:
                     print(f"\n  {'═'*58}")
                     print(f"  SECTION COLORBAR LOG  >>>  Motor-Percept Diff | {lock_type} | {roi_lower}")
-                    print(f"  vmax_cond=±{_mp_vmax_cond:.4f} dB  vmax_inter=±{_mp_vmax_inter:.4f} dB")
+                    print(f"  vmax_cond=±{_mp_vmax_cond:.4f} dB  vmax_inter=±{_mp_vmax_inter:.4f} dB  [harmonized]")
                     print(f"  {'═'*58}")
 
                 for _c1, _c2 in condition_pairs:
@@ -2333,15 +2445,24 @@ def auto_group_ersp_analysis(subject_ids,
                     arr_reg_diff = np.array([motor_reg[s] - percept_reg[s] for s in common_mp])
                     arr_ran_diff = np.array([motor_ran[s] - percept_ran[s] for s in common_mp])
 
+                    _DISP_MP = {
+                        'regular_high': 'Regular High',
+                        'random_high':  'Random High',
+                        'random_low':   'Random Low',
+                        'Regular':      'Regular',
+                        'Random':       'Random',
+                    }
+                    _lbl_c1   = _DISP_MP.get(_c1, _c1)
+                    _lbl_c2   = _DISP_MP.get(_c2, _c2)
                     _pair_lbl = f'{_c1}_vs_{_c2}'
                     sub_dir_mp = str(Path(output_dir) / f'testing_motor_perceptual_diff_{lock_type}_{roi_lower}')
                     Path(sub_dir_mp).mkdir(parents=True, exist_ok=True)
-                    suptitle_mp = f'Motor-Perceptual Diff | {_pair_lbl} | {lock_cap}-locked | {roi_cap} ROI'
+                    suptitle_mp = f'Motor-Perceptual Diff | {_lbl_c1} vs {_lbl_c2} | {lock_cap}-locked | {roi_cap} ROI'
                     out_name_mp = f'group_motor_perceptual_diff_{lock_type}_{roi_lower}_{_pair_lbl}.png'
                     _plot_group_motor_perceptual_diff(
                         arr_reg_diff, arr_ran_diff, freqs_mp, times_mp,
                         common_mp, suptitle_mp, Path(sub_dir_mp) / out_name_mp,
-                        label_left=_c1, label_right=_c2,
+                        label_left=_lbl_c1, label_right=_lbl_c2,
                         vmax_cond=_mp_vmax_cond, vmax_inter=_mp_vmax_inter,
                     )
 
