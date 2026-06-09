@@ -12,6 +12,26 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.widgets import Button, TextBox
 import mne
 import mne_icalabel
+import threading
+
+
+# ================================================================
+# GUI-safe input helper
+# 在保持 matplotlib GUI 事件循環活躍的情況下等待終端機輸入。
+# 只在 while True 迴圈（視窗已開啟後）使用；視窗開啟前的 input() 保持不變。
+# ================================================================
+def _input_with_gui(prompt: str = "") -> str:
+    """等待終端機輸入，同時讓 matplotlib 視窗保持可互動狀態。"""
+    result = [None]
+
+    def _read():
+        result[0] = input(prompt)
+
+    t = threading.Thread(target=_read, daemon=True)
+    t.start()
+    while result[0] is None:
+        plt.pause(0.05)   # 每 50 ms 讓 GUI event loop 跑一輪
+    return result[0]
 
 
 # ================================================================
@@ -928,6 +948,7 @@ def perform_ica(raw):
             show=False
         )
         plt.show(block=False)
+        plt.pause(0.3)   # 讓 event loop 執行一次，確保視窗初始繪製
         
         # ===== 已整合到 ICANavigatorWindow 的第2頁，此處不再需要獨立呼叫 =====
         print("\nTip: Use the 'Next Page ▶' button in ICA Navigator to view detailed properties")
@@ -964,6 +985,7 @@ def perform_ica(raw):
             plt.legend(['Cumulative Variance', 'Individual Variance', '95% Variance'])
             plt.tight_layout()
             plt.show(block=False)
+            plt.pause(0.3)   # 讓 event loop 執行一次，確保變異量圖繪製
         
         else:
             print("⚠️  無法取得 PCA 解釋變異量資訊")
@@ -974,9 +996,8 @@ def perform_ica(raw):
         print("Please review the ICA Navigator window and charts above.")
         print("When you're ready to select components to exclude, press ENTER to continue...")
         print("="*70)
-        input()  # 等待用戶按 ENTER
-        # ===== 等待確認結束 =====
- 
+        _input_with_gui()  # 等待用戶按 ENTER（保持視窗活躍）
+
         # 讓使用者選擇要排除的ICA components Make user select which component want to delete 
         print("\n請選擇要排除的成分 Select which component you want to delete:")
         print("輸入格式:用逗號分開數字(例如:2,3,11) Input formal: Use comma as the interval to separate the number(e.g.2,3,11)")
@@ -985,7 +1006,7 @@ def perform_ica(raw):
         print("輸入 'auto'使用IClabel自動檢測到的眼動和肌電成分 (如果有檢測到的話) Input 'auto' use the auto detected eog components (if have)")
         print("Tip: Use the 'Next Page' button in ICA Navigator to view detailed properties of each component")
         
-        choice = input("請輸入:").strip().lower()
+        choice = _input_with_gui("請輸入:").strip().lower()
         
         # 處理空輸入
         if choice == '':
@@ -1026,7 +1047,7 @@ def perform_ica(raw):
         
         # 確認選擇 Confirm the selection
         print(f"\n選擇要排除的components Select the component you want to delete:{exclude_idx}")
-        confirm = input("確認要排除指定的components嗎? Are you sure you want to delete this components?(y/n):").lower()
+        confirm = _input_with_gui("確認要排除指定的components嗎? Are you sure you want to delete this components?(y/n):").lower()
             
         if confirm == 'y':
             # 應用 ICA apply ICA
@@ -1066,20 +1087,20 @@ def perform_ica(raw):
             }
 
             # === 儲存 ICA 後的資料 ===
-            save_choice = input("\n是否要儲存 ICA 處理後的資料? (y/n) [預設 n]: ").strip().lower()
+            save_choice = _input_with_gui("\n是否要儲存 ICA 處理後的資料? (y/n) [預設 n]: ").strip().lower()
             if save_choice == 'y':
                 print("\n請選擇儲存格式:")
                 print("1. FIF (.fif) - MNE-Python 原生格式")
                 print("2. MAT (.mat) - MATLAB 格式")
                 print("3. FIF + MAT 都儲存")
-                fmt_choice = input("\n請選擇 (1/2/3) [預設 1]: ").strip()
+                fmt_choice = _input_with_gui("\n請選擇 (1/2/3) [預設 1]: ").strip()
 
                 import os, scipy.io
                 formats = ['mat'] if fmt_choice == '2' else (['fif', 'mat'] if fmt_choice == '3' else ['fif'])
 
                 if 'fif' in formats:
                     default_fif = 'ica_cleaned-raw.fif'
-                    fif_file = input(f"\n請輸入 FIF 檔名 [預設: {default_fif}]: ").strip() or default_fif
+                    fif_file = _input_with_gui(f"\n請輸入 FIF 檔名 [預設: {default_fif}]: ").strip() or default_fif
                     if not (fif_file.endswith('.fif') or fif_file.endswith('.fif.gz')):
                         fif_file += '.fif'
                     raw_cleaned.save(fif_file, overwrite=True)
@@ -1087,7 +1108,7 @@ def perform_ica(raw):
 
                 if 'mat' in formats:
                     default_mat = 'ica_cleaned-raw.mat'
-                    mat_file = input(f"\n請輸入 MAT 檔名 [預設: {default_mat}]: ").strip() or default_mat
+                    mat_file = _input_with_gui(f"\n請輸入 MAT 檔名 [預設: {default_mat}]: ").strip() or default_mat
                     if not mat_file.endswith('.mat'):
                         mat_file += '.mat'
                     scipy.io.savemat(mat_file, {
