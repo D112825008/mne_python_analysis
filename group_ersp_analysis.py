@@ -46,6 +46,170 @@ ROI_GROUPS = {
 LEARNING_GROUPS = [(7, 11), (12, 16), (17, 21), (22, 26)]
 TESTING_GROUPS  = [(27, 28), (29, 30), (31, 32), (33, 34)]
 
+# ── 全域 permutation 結果收集器 ──────────────────────────────
+# 所有分析的 sig cluster 結果都 append 到這裡，最後統一印出
+_PERM_SUMMARY = []   # 每筆: dict(label, roi, lock, phase, pair, cond_pair, n_sub, n_sig, n_total)
+
+def _log_perm(label, roi, lock, phase, pair, cond_pair, n_sub, n_sig, n_total):
+    """將一筆 permutation test 結果寫入全域摘要。"""
+    _PERM_SUMMARY.append(dict(
+        label=label, roi=roi, lock=lock, phase=phase, pair=pair,
+        cond_pair=cond_pair, n_sub=n_sub, n_sig=n_sig, n_total=n_total,
+    ))
+
+def print_perm_summary():
+    """在分析結尾印出所有 permutation test 結果的彙整表。"""
+    if not _PERM_SUMMARY:
+        print("\n[Perm Summary] 無結果可顯示")
+        return
+    sig_rows = [r for r in _PERM_SUMMARY if r['n_sig'] > 0]
+    print("\n" + "╔" + "═"*110 + "╗")
+    print("║  PERMUTATION TEST SUMMARY  ─  所有分析彙整" + " "*67 + "║")
+    print("╠" + "═"*110 + "╣")
+    hdr = f"  {'Label':<28} {'ROI':<22} {'Lock':<10} {'Phase':<14} {'Pair':<14} {'Cond Pair':<30} {'N':>4} {'Sig/Tot':>9}"
+    print("║" + hdr + "║")
+    print("╠" + "─"*110 + "╣")
+    for r in _PERM_SUMMARY:
+        sig_marker = " ★" if r['n_sig'] > 0 else "  "
+        row = (f"  {r['label']:<28} {r['roi']:<22} {r['lock']:<10} {r['phase']:<14} "
+               f"{r['pair']:<14} {r['cond_pair']:<30} {r['n_sub']:>4} "
+               f"{r['n_sig']:>3}/{r['n_total']:<4}{sig_marker}")
+        print("║" + row + "║")
+    print("╠" + "═"*110 + "╣")
+    print(f"║  合計：{len(_PERM_SUMMARY)} 項檢定，★ 顯著 {len(sig_rows)} 項（p < 0.05, cluster-corrected）" +
+          " "*max(0, 75 - len(str(len(_PERM_SUMMARY))) - len(str(len(sig_rows)))) + "║")
+    print("╚" + "═"*110 + "╝")
+
+# ── G*Power 樣本數估算 ────────────────────────────────────────
+def compute_power_analysis(h5_dir, subject_ids,
+                            pkl_dir=None,
+                            roi_configs=None,
+                            alpha=0.05, power_target=0.80,
+                            condition_left='regular_high',
+                            condition_right='random_low'):
+    """
+    從 Learning block 組計算 Cohen's d 並估算所需樣本數。
+
+    Response-locked : 從 h5_dir 讀取 .h5（MNE AverageTFR）
+    Stimulus-locked : 從 pkl_dir 讀取 .pkl（與群體圖片路徑一致）
+                      pkl 檔名格式：
+                      {sid}_learning_stimulus_{roi_lower}_{condition}_{block}_ersp.pkl
+
+    Windows（與 export_ersp_to_csv 一致）：
+      Response-locked │ Theta 4–8 Hz │ −300 to +50 ms  │ Motor ROI
+      Stimulus-locked │ Alpha 8–13Hz │ +100 to +300 ms │ Perceptual ROI
+
+    Parameters
+    ----------
+    h5_dir  : str  response-locked .h5 所在目錄
+    pkl_dir : str  stimulus-locked .pkl 所在目錄（None 時沿用 h5_dir，但通常兩者不同）
+
+    Returns
+    -------
+    dict: 每個 (lock, roi) → {'d': float, 'n_required': int, 'power_at_n': float}
+    """
+    try:
+        from statsmodels.stats.power import TTestPower
+    except ImportError:
+        print("  ⚠ statsmodels 未安裝，跳過 G*Power 計算")
+        return {}
+
+    # pkl_dir 未指定時，退而沿用 h5_dir（向後相容，但 stimulus 仍可能找不到）
+    _pkl_dir = Path(pkl_dir) if pkl_dir is not None else Path(h5_dir)
+
+    if roi_configs is None:
+        roi_configs = [
+            dict(lock='response', roi='Motor',      freq=(4, 8),  time=(-0.300, 0.050)),
+            dict(lock='stimulus', roi='Perceptual', freq=(8, 13), time=( 0.100, 0.300)),
+        ]
+
+    results = {}
+    pwr_calc = TTestPower()
+
+    for cfg in roi_configs:
+        lock    = cfg['lock']
+        roi     = cfg['roi']
+        freq_lo, freq_hi = cfg['freq']
+        t_lo,   t_hi     = cfg['time']
+        lock_cap  = lock.capitalize()
+        roi_lower = roi.lower()
+
+        diffs = []
+        for sid in subject_ids:
+            block_groups = ['Block7-11', 'Block12-16', 'Block17-21', 'Block22-26']
+            sub_means_l, sub_means_r = [], []
+            for blk in block_groups:
+                # ── 依 lock 類型選擇正確的檔案格式與目錄 ──────────────────
+                if lock == 'stimulus':
+                    # Stimulus-locked Learning 資料以 .pkl 儲存於 pkl_dir
+                    # 格式與 _find_and_load / 群體圖片路徑完全一致
+                    fp_l = _pkl_dir / f'{sid}_learning_stimulus_{roi_lower}_{condition_left}_{blk}_ersp.pkl'
+                    fp_r = _pkl_dir / f'{sid}_learning_stimulus_{roi_lower}_{condition_right}_{blk}_ersp.pkl'
+                    if not fp_l.exists() or not fp_r.exists():
+                        continue
+                    try:
+                        ersp_l, freqs, times, _ = _load_pkl(fp_l)
+                        ersp_r, _,     _,     _ = _load_pkl(fp_r)
+                    except Exception:
+                        continue
+                else:
+                    # Response-locked Learning 資料以 .h5 儲存於 h5_dir
+                    fp_l = Path(h5_dir) / f'{sid}_{lock_cap}_Learning_{blk}_{condition_left}_ERSP.h5'
+                    fp_r = Path(h5_dir) / f'{sid}_{lock_cap}_Learning_{blk}_{condition_right}_ERSP.h5'
+                    if not fp_l.exists() or not fp_r.exists():
+                        continue
+                    try:
+                        ersp_l, freqs, times, _ = _load_h5_response(fp_l, roi)
+                        ersp_r, _,     _,     _ = _load_h5_response(fp_r, roi)
+                    except Exception:
+                        continue
+                # ──────────────────────────────────────────────────────────
+                f_mask = (freqs >= freq_lo) & (freqs <= freq_hi)
+                t_mask = (times >= t_lo)    & (times <= t_hi)
+                sub_means_l.append(ersp_l[np.ix_(f_mask, t_mask)].mean())
+                sub_means_r.append(ersp_r[np.ix_(f_mask, t_mask)].mean())
+            if not sub_means_l:
+                continue
+            diffs.append(np.mean(sub_means_l) - np.mean(sub_means_r))
+
+        if len(diffs) < 3:
+            print(f"  ⚠ G*Power [{lock}|{roi}]: 有效受試者數不足（{len(diffs)}），跳過")
+            continue
+
+        diffs    = np.array(diffs)
+        mean_d   = diffs.mean()
+        std_d    = diffs.std(ddof=1)
+        cohens_d = mean_d / std_d if std_d > 1e-12 else 0.0
+        # 單尾（alternative='larger' → 預期 reg > ran）
+        n_req = pwr_calc.solve_power(
+            effect_size=abs(cohens_d), alpha=alpha, power=power_target,
+            alternative='larger')
+        n_req = int(np.ceil(n_req))
+        pwr_now = pwr_calc.solve_power(
+            effect_size=abs(cohens_d), alpha=alpha, nobs=len(diffs),
+            alternative='larger')
+        results[(lock, roi)] = dict(
+            d=cohens_d, n_required=n_req,
+            power_at_n=pwr_now, n_current=len(diffs),
+            mean_diff=mean_d, std_diff=std_d,
+        )
+
+    # ── 印出表格 ──
+    if results:
+        print("\n" + "╔" + "═"*90 + "╗")
+        print("║  G*Power 樣本數估算  (one-tailed, α=0.05, target power=0.80)" + " "*27 + "║")
+        print("╠" + "═"*90 + "╣")
+        hdr = f"  {'Lock':<10} {'ROI':<22} {'Cohen d':>10} {'Mean diff':>10} {'Std diff':>10} {'N req.':>8} {'Power@N_now':>12}"
+        print("║" + hdr + "║")
+        print("╠" + "─"*90 + "╣")
+        for (lk, roi), v in results.items():
+            row = (f"  {lk:<10} {roi:<22} {v['d']:>10.3f} {v['mean_diff']:>10.4f} "
+                   f"{v['std_diff']:>10.4f} {v['n_required']:>8} {v['power_at_n']:>12.3f}")
+            print("║" + row + "║")
+        print("╚" + "═"*90 + "╝")
+
+    return results
+
 
 # ============================================================
 # 1. 儲存個別受試者 ERSP（由 ersp.py 的 save_for_group 呼叫）
@@ -242,6 +406,21 @@ def _load_subject_testing_pair(pkl_dir, subject_id, lock_type,
         data_path = Path(h5_dir) if h5_dir is not None else Path(pkl_dir)
     roi_lower = roi_name.lower()
     cond_name = 'MotorTest' if test_type == 'motor' else 'PerceptualTest'
+
+    # ── AllBlocks 分支：直接讀 AllBlocks h5 ──────────────────
+    if pair == 'allblocks':
+        lock_cap = lock_type.capitalize()
+        fp_ab = data_path / f'{subject_id}_{lock_cap}_{cond_name}_AllBlocks_{trial_type}_ERSP.h5'
+        if not fp_ab.exists():
+            # stimulus-locked AllBlocks 可能在 pkl_dir
+            fp_ab_alt = Path(pkl_dir) / f'{subject_id}_{lock_cap}_{cond_name}_AllBlocks_{trial_type}_ERSP.h5'
+            if fp_ab_alt.exists():
+                fp_ab = fp_ab_alt
+            else:
+                raise FileNotFoundError(f"AllBlocks 檔案不存在：{fp_ab}")
+        ersp, f, t, nave = _load_h5_response(fp_ab, roi_name)
+        return ersp, f, t, [fp_ab.name], [nave]
+    # ─────────────────────────────────────────────────────────
 
     if lock_type == 'stimulus':
         pattern = (
@@ -668,7 +847,8 @@ def _plot_single_electrode_comparison(arr_left, arr_right, freqs, times,
                                        electrode_name,
                                        label_left='Regular', label_right='Random',
                                        nave_list_left=None, nave_list_right=None,
-                                       vmax_cond=None, vmax_diff=None):
+                                       vmax_cond=None, vmax_diff=None,
+                                       do_permutation=False, n_permutations=1000):
     """產生單一電極群體比較圖：left | right | Difference。
 
     vmax_cond / vmax_diff:
@@ -702,17 +882,42 @@ def _plot_single_electrode_comparison(arr_left, arr_right, freqs, times,
     if vmax_cond < 1e-10: vmax_cond = 1e-10
     if vmax_diff < 1e-10: vmax_diff = 1e-10
 
+    # ── Permutation test ───────────────────────────────────────
+    sig_mask = None
+    n_sig = n_total = 0
+    if do_permutation and n_sub >= 3:
+        try:
+            diff_per_sub = arr_left - arr_right
+            _, clusters, cl_pv, _ = permutation_cluster_1samp_test(
+                diff_per_sub, n_permutations=n_permutations,
+                threshold=None, tail=0, n_jobs=1,
+                verbose=False, out_type='mask')
+            sig_mask = np.zeros_like(diff, dtype=bool)
+            n_total = len(clusters)
+            for c, pv in zip(clusters, cl_pv):
+                if pv < 0.05:
+                    sig_mask |= c
+                    n_sig += 1
+            print(f"    [ElecPerm] {electrode_name} Sig clusters: {n_sig}/{n_total}")
+        except Exception as _e:
+            print(f"    ⚠ Perm test failed ({electrode_name}): {_e}")
+    # ─────────────────────────────────────────────────────────────
+
     lv_c = np.linspace(-vmax_cond, vmax_cond, 20)
     lv_d = np.linspace(-vmax_diff, vmax_diff, 20)
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    for ax, data, title, lv, vm, cb_lbl in [
-        (axes[0], left_mean,  f'{label_left}\n(N={n_sub}){_nave_str(nave_list_left)}',   lv_c, vmax_cond, 'Power (dB)'),
-        (axes[1], right_mean, f'{label_right}\n(N={n_sub}){_nave_str(nave_list_right)}', lv_c, vmax_cond, 'Power (dB)'),
-        (axes[2], diff,       f'Difference ({label_left} - {label_right})',               lv_d, vmax_diff, 'Power Difference (dB)'),
-    ]:
+    panels = [
+        (axes[0], left_mean,  f'{label_left}\n(N={n_sub}){_nave_str(nave_list_left)}',   lv_c, vmax_cond, 'Power (dB)',           None),
+        (axes[1], right_mean, f'{label_right}\n(N={n_sub}){_nave_str(nave_list_right)}', lv_c, vmax_cond, 'Power (dB)',           None),
+        (axes[2], diff,       f'Difference ({label_left} - {label_right})',               lv_d, vmax_diff, 'Power Difference (dB)', sig_mask),
+    ]
+    for ax, data, title, lv, vm, cb_lbl, smask in panels:
         im = ax.contourf(times, freqs, data, levels=lv,
                          cmap='RdBu_r', vmin=-vm, vmax=vm, extend='both')
+        if smask is not None and smask.any():
+            ax.contour(times, freqs, smask.astype(float),
+                       levels=[0.5], colors='black', linewidths=1.5)
         ax.axvline(0, color='black', linestyle='--', linewidth=1.5)
         ax.axhline(8,  color='white', linestyle=':', linewidth=1, alpha=0.6)
         ax.axhline(13, color='white', linestyle=':', linewidth=1, alpha=0.6)
@@ -721,6 +926,8 @@ def _plot_single_electrode_comparison(arr_left, arr_right, freqs, times,
         ax.set_title(title, fontsize=11, fontweight='bold')
         ax.set_xlim([x_min, x_max])
         plt.colorbar(im, ax=ax, label=cb_lbl)
+    if do_permutation and sig_mask is not None:
+        axes[2].set_title(axes[2].get_title() + '\n(black outline: p<0.05)', fontsize=10)
 
     fig.suptitle(f'Group ERSP Comparison\n{suptitle} | Electrode: {electrode_name}',
                  fontsize=12, fontweight='bold')
@@ -728,6 +935,7 @@ def _plot_single_electrode_comparison(arr_left, arr_right, freqs, times,
     plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
     plt.close(fig)
     print(f"    ✓ Saved: {output_path}")
+    return dict(n_sig=n_sig, n_total=n_total)
 
 
 def run_single_electrode_group_analysis(subject_ids, electrodes,
@@ -855,6 +1063,19 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                     _vc_t = float(np.percentile(np.concatenate(_c_t), 95)) if _c_t else None
                     _vd_t = float(np.percentile(np.concatenate(_d_t), 95)) if _d_t else (_vc_t * 0.4 if _vc_t else None)
                     _testing_vmaxes[_phase] = (_vc_t, _vd_t)
+
+                # ── Motor ↔ Perceptual colorbar 統一（同 lock type）────────
+                # 讓同一 lock type 的 Motor Test 和 Perceptual Test 共用 colorbar，
+                # 才能直觀對照兩個測驗條件的 ERSP 幅度差異。
+                _vc_m, _vd_m = _testing_vmaxes.get('motor',      (None, None))
+                _vc_p, _vd_p = _testing_vmaxes.get('perceptual', (None, None))
+                _vc_unified = max(v for v in [_vc_m, _vc_p] if v is not None) if any(v is not None for v in [_vc_m, _vc_p]) else None
+                _vd_unified = max(v for v in [_vd_m, _vd_p] if v is not None) if any(v is not None for v in [_vd_m, _vd_p]) else None
+                if _vc_unified is not None:
+                    _testing_vmaxes['motor']      = (_vc_unified, _vd_unified)
+                    _testing_vmaxes['perceptual'] = (_vc_unified, _vd_unified)
+                    print(f"    [Motor↔Perceptual 統一] vmax_cond=±{_vc_unified:.4f} vmax_diff=±{_vd_unified:.4f} dB")
+                # ─────────────────────────────────────────────────────────────
 
                 # ── Phase 4: Motor-Perceptual Diff ──
                 _c_mp, _d_mp = [], []
@@ -1017,12 +1238,17 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
 
                 suptitle = f'Learning | {gl} | {lock_type}-locked | {label_left} vs {label_right}'
                 out_name = f'group_learning_{lock_type.lower()}_{electrode}_{gl}_{condition_left}_vs_{condition_right}_comparison.png'
-                _plot_single_electrode_comparison(
+                _elec_result_l = _plot_single_electrode_comparison(
                     np.array(arr_l), np.array(arr_r), freqs, times,
                     ids_found, suptitle, _sec_learning / out_name, electrode,
                     label_left=label_left, label_right=label_right,
                     nave_list_left=nave_l_list, nave_list_right=nave_r_list,
-                    vmax_cond=_evc_l, vmax_diff=_evd_l)
+                    vmax_cond=_evc_l, vmax_diff=_evd_l,
+                    do_permutation=do_permutation_test, n_permutations=n_permutations)
+                if do_permutation_test:
+                    _log_perm('SingleElec', electrode, lock_type, 'learning', gl,
+                              f'{condition_left}_vs_{condition_right}',
+                              len(ids_found), _elec_result_l.get('n_sig', 0), _elec_result_l.get('n_total', 0))
 
             # ── Epoch 4 vs Epoch 1：跨條件比較 ──────────────────────
             # 結構：左 = condition_left (Ep4−Ep1)，右 = condition_right (Ep4−Ep1)
@@ -1071,12 +1297,17 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                     f'group_learning_{lock_type.lower()}_{electrode}'
                     f'_epoch4_minus_epoch1_{condition_left}_vs_{condition_right}_comparison.png'
                 )
-                _plot_single_electrode_comparison(
+                _elec_result_ep = _plot_single_electrode_comparison(
                     _arr_ep_l, _arr_ep_r, _ep_freq, _ep_time,
                     _ids_common_ep, _suptitle_e, _sec_learning / _out_e, electrode,
                     label_left=f'{label_left}\n(Ep4−Ep1)',
                     label_right=f'{label_right}\n(Ep4−Ep1)',
-                    vmax_cond=_evc_l, vmax_diff=_evd_l)
+                    vmax_cond=_evc_l, vmax_diff=_evd_l,
+                    do_permutation=do_permutation_test, n_permutations=n_permutations)
+                if do_permutation_test:
+                    _log_perm('SingleElec-Ep4E1', electrode, lock_type, 'learning', 'Ep4-Ep1',
+                              f'{condition_left}_vs_{condition_right}',
+                              len(_ids_common_ep), _elec_result_ep.get('n_sig', 0), _elec_result_ep.get('n_total', 0))
 
             # ── Testing ──
             for test_type in ('motor', 'perceptual'):
@@ -1136,17 +1367,22 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
 
                     suptitle = f'Testing | {test_type.capitalize()} | {pair_desc} | {lock_type}-locked | {label_left} vs {label_right}'
                     out_name = f'group_testing_{lock_type.lower()}_{electrode}_{test_type}_{pair_key}_{condition_left}_vs_{condition_right}_comparison.png'
-                    _plot_single_electrode_comparison(
+                    _elec_result_t = _plot_single_electrode_comparison(
                         np.array(arr_l), np.array(arr_r), freqs, times,
                         ids_found, suptitle, _sec_testing / out_name, electrode,
                         label_left=label_left, label_right=label_right,
                         nave_list_left=nave_list_l, nave_list_right=nave_list_r,
-                        vmax_cond=_evc_m if test_type == "motor" else _evc_p, vmax_diff=_evd_m if test_type == "motor" else _evd_p)
+                        vmax_cond=_evc_m if test_type == "motor" else _evc_p, vmax_diff=_evd_m if test_type == "motor" else _evd_p,
+                        do_permutation=do_permutation_test, n_permutations=n_permutations)
+                    if do_permutation_test:
+                        _log_perm('SingleElec', electrode, lock_type, f'testing_{test_type}', pair_key,
+                                  f'{condition_left}_vs_{condition_right}',
+                                  len(ids_found), _elec_result_t.get('n_sig', 0), _elec_result_t.get('n_total', 0))
 
                 # ── 各別 Block 群體圖 ──
                 all_block_labels = set()
                 for sid in subject_ids:
-                    for fp in h5_path.glob(f'{sid}_{lock_type}_{cond_name}_Block*_{condition_left}_ERSP.h5'):
+                    for fp in search_path.glob(f'{sid}_{lock_type}_{cond_name}_Block*_{condition_left}_ERSP.h5'):
                         all_block_labels.add(fp.stem.split('_')[3])
                 all_block_labels = sorted(all_block_labels,
                     key=lambda b: int(''.join(filter(str.isdigit, b.split('-')[0]))))
@@ -1156,8 +1392,8 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                     nave_list_l, nave_list_r = [], []
                     freqs = times = None
                     for sid in subject_ids:
-                        fp_l = h5_path / f'{sid}_{lock_type}_{cond_name}_{blk_label}_{condition_left}_ERSP.h5'
-                        fp_r = h5_path / f'{sid}_{lock_type}_{cond_name}_{blk_label}_{condition_right}_ERSP.h5'
+                        fp_l = search_path / f'{sid}_{lock_type}_{cond_name}_{blk_label}_{condition_left}_ERSP.h5'
+                        fp_r = search_path / f'{sid}_{lock_type}_{cond_name}_{blk_label}_{condition_right}_ERSP.h5'
                         if not fp_l.exists() or not fp_r.exists():
                             continue
                         try:
@@ -1216,12 +1452,17 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
 
                 suptitle = f'Testing Pooled | {_test_type.capitalize()} | AllBlocks | {lock_type}-locked | {label_left} vs {label_right}'
                 out_name = f'group_pooled_{lock_type.lower()}_{electrode}_{_test_type}_{condition_left}_vs_{condition_right}_comparison.png'
-                _plot_single_electrode_comparison(
+                _elec_result_ab = _plot_single_electrode_comparison(
                     np.array(arr_l), np.array(arr_r), freqs, times,
                     ids_found, suptitle, _sec_testing / out_name, electrode,
                     label_left=label_left, label_right=label_right,
                     nave_list_left=nave_list_l, nave_list_right=nave_list_r,
-                    vmax_cond=_evc_m if _test_type == "motor" else _evc_p, vmax_diff=_evd_m if _test_type == "motor" else _evd_p)
+                    vmax_cond=_evc_m if _test_type == "motor" else _evc_p, vmax_diff=_evd_m if _test_type == "motor" else _evd_p,
+                    do_permutation=do_permutation_test, n_permutations=n_permutations)
+                if do_permutation_test:
+                    _log_perm('SingleElec-AllBlocks', electrode, lock_type, f'testing_{_test_type}', 'allblocks',
+                              f'{condition_left}_vs_{condition_right}',
+                              len(ids_found), _elec_result_ab.get('n_sig', 0), _elec_result_ab.get('n_total', 0))
 
             # ── Motor-Perceptual Diff 單一電極 ──
             _motor_reg, _motor_ran = {}, {}
@@ -1299,7 +1540,8 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
 def _plot_group_motor_perceptual_diff(arr_reg_diff, arr_ran_diff, freqs, times,
                                        common_ids, suptitle, output_path,
                                        label_left='Regular', label_right='Random',
-                                       vmax_cond=None, vmax_inter=None):
+                                       vmax_cond=None, vmax_inter=None,
+                                       do_permutation=False, n_permutations=1000):
     """
     群體 Motor-Perceptual 差值比較圖。
     arr_reg_diff[i] = motor_reg[i] - percept_reg[i]  (n_sub, n_freqs, n_times)
@@ -1330,17 +1572,50 @@ def _plot_group_motor_perceptual_diff(arr_reg_diff, arr_ran_diff, freqs, times,
     if vmax_cond < 1e-10: vmax_cond = 1e-10
     if vmax_int  < 1e-10: vmax_int  = 1e-10
 
+    # ── Permutation tests ──────────────────────────────────────────
+    sig_reg = sig_ran = sig_inter = None
+    n_sig_reg = n_sig_ran = n_sig_inter = 0
+    n_tot_reg = n_tot_ran = n_tot_inter = 0
+    if do_permutation and n_sub >= 3:
+        print(f"    Running Cluster Permutation Test (MP Diff, n_permutations={n_permutations})...")
+        for arr, label_p in [(arr_reg_diff, label_left), (arr_ran_diff, label_right),
+                              (arr_reg_diff - arr_ran_diff, 'Interaction')]:
+            try:
+                _, cls, cl_pv, _ = permutation_cluster_1samp_test(
+                    arr, n_permutations=n_permutations,
+                    threshold=None, tail=0, n_jobs=1,
+                    verbose=False, out_type='mask')
+                mask = np.zeros(arr.shape[1:], dtype=bool)
+                n_s = sum(1 for c, pv in zip(cls, cl_pv) if pv < 0.05)
+                for c, pv in zip(cls, cl_pv):
+                    if pv < 0.05:
+                        mask |= c
+                if label_p == label_left:
+                    sig_reg, n_sig_reg, n_tot_reg = mask, n_s, len(cls)
+                elif label_p == label_right:
+                    sig_ran, n_sig_ran, n_tot_ran = mask, n_s, len(cls)
+                else:
+                    sig_inter, n_sig_inter, n_tot_inter = mask, n_s, len(cls)
+                print(f"      [{label_p}] Sig clusters: {n_s}/{len(cls)}")
+            except Exception as e:
+                print(f"      ⚠ Perm test failed ({label_p}): {e}")
+    # ─────────────────────────────────────────────────────────────────
+
     lv_c = np.linspace(-vmax_cond, vmax_cond, 20)
     lv_i = np.linspace(-vmax_int,  vmax_int,  20)
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    for ax, data, title, lv, vm, cbl in [
-        (axes[0], reg_mean,    f'{label_left} Motor-Perceptual\n(N={n_sub})', lv_c, vmax_cond, 'Power diff (dB)'),
-        (axes[1], ran_mean,    f'{label_right} Motor-Perceptual\n(N={n_sub})', lv_c, vmax_cond, 'Power diff (dB)'),
-        (axes[2], interaction, f'Interaction\n({label_left} M-P) - ({label_right} M-P)', lv_i, vmax_int, 'Power diff (dB)'),
-    ]:
+    panels = [
+        (axes[0], reg_mean,    f'{label_left} Motor-Perceptual\n(N={n_sub})', lv_c, vmax_cond, 'Power diff (dB)', sig_reg),
+        (axes[1], ran_mean,    f'{label_right} Motor-Perceptual\n(N={n_sub})', lv_c, vmax_cond, 'Power diff (dB)', sig_ran),
+        (axes[2], interaction, f'Interaction\n({label_left} M-P) - ({label_right} M-P)', lv_i, vmax_int, 'Power diff (dB)', sig_inter),
+    ]
+    for ax, data, title, lv, vm, cbl, sig_mask in panels:
         im = ax.contourf(times, freqs, data, levels=lv,
                          cmap='RdBu_r', vmin=-vm, vmax=vm, extend='both')
+        if sig_mask is not None and sig_mask.any():
+            ax.contour(times, freqs, sig_mask.astype(float),
+                       levels=[0.5], colors='black', linewidths=1.5)
         ax.axvline(0, color='black', linestyle='--', linewidth=1.5)
         ax.axhline(8,  color='white', linestyle=':', linewidth=1, alpha=0.6)
         ax.axhline(13, color='white', linestyle=':', linewidth=1, alpha=0.6)
@@ -1349,6 +1624,8 @@ def _plot_group_motor_perceptual_diff(arr_reg_diff, arr_ran_diff, freqs, times,
         ax.set_title(title, fontsize=11, fontweight='bold')
         ax.set_xlim([x_min, x_max])
         plt.colorbar(im, ax=ax, label=cbl)
+    if do_permutation:
+        axes[2].set_title(axes[2].get_title() + '\n(black outline: p<0.05, cluster-corrected)', fontsize=10)
 
     fig.suptitle(f'Group Motor vs Perceptual Diff\n{suptitle}',
                  fontsize=12, fontweight='bold')
@@ -1356,6 +1633,9 @@ def _plot_group_motor_perceptual_diff(arr_reg_diff, arr_ran_diff, freqs, times,
     plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
     plt.close(fig)
     print(f'    ✓ Saved: {output_path}')
+    return dict(n_sig_reg=n_sig_reg, n_tot_reg=n_tot_reg,
+                n_sig_ran=n_sig_ran, n_tot_ran=n_tot_ran,
+                n_sig_inter=n_sig_inter, n_tot_inter=n_tot_inter)
 
 
 def _draw_ersp_panel(ax, ersp_2d, freqs, times, title, vmin, vmax, x_min=-0.5, x_max=0.2):
@@ -1415,6 +1695,7 @@ def _plot_group_block(arr_reg, arr_ran, freqs, times,
     # ── Cluster Permutation Test ──
     sig_mask = None
     n_sig    = 0
+    n_total  = 0
 
     if do_permutation and n_sub >= 3:
         print(f"    Running Cluster Permutation Test (n_permutations={n_permutations})...")
@@ -1429,12 +1710,13 @@ def _plot_group_block(arr_reg, arr_ran, freqs, times,
                 verbose=False,
                 out_type='mask'
             )
+            n_total  = len(clusters)
             sig_mask = np.zeros_like(diff, dtype=bool)
             for c, pv in zip(clusters, cluster_pv):
                 if pv < 0.05:
                     sig_mask |= c
                     n_sig += 1
-            print(f"    ✓ Significant clusters: {n_sig}/{len(clusters)}")
+            print(f"    ✓ Significant clusters: {n_sig}/{n_total}")
         except Exception as e:
             print(f"    ⚠ Permutation test failed: {e}")
 
@@ -1492,6 +1774,7 @@ def _plot_group_block(arr_reg, arr_ran, freqs, times,
         'diff'         : diff,
         'sig_mask'     : sig_mask,
         'n_sig_clusters': n_sig,
+        'n_clusters'    : n_total,
     }
 
 
@@ -1674,6 +1957,16 @@ def group_ersp_analysis(subject_ids,
                 nave_list_left=nave1_common,
                 nave_list_right=nave2_common,
             )
+            # ── 寫入全域摘要 ──
+            if do_permutation_test:
+                _log_perm(
+                    label='ROI-Group', roi=roi_cap, lock=lock_type,
+                    phase='learning', pair=group_label,
+                    cond_pair=f'{condition1}_vs_{condition2}',
+                    n_sub=len(common_ids),
+                    n_sig=block_result.get('n_sig_clusters', 0),
+                    n_total=block_result.get('n_clusters', 0),
+                )
             all_results[group_label] = {
                 **block_result,
                 'subject_ids': common_ids,
@@ -1752,7 +2045,7 @@ def group_ersp_analysis(subject_ids,
                     _ep4e1_vd = external_vmax_ep4e1_diff
                     if _ep4e1_vc is not None:
                         print(f"  [colorbar] Ep4-Ep1 使用外部 colorbar: ±{_ep4e1_vc:.4f} / ±{_ep4e1_vd:.4f} dB")
-                    _plot_group_block(
+                    _ep4e1_result = _plot_group_block(
                         _arr_l, _arr_r, _ep_freqs, _ep_times,
                         _ids_both, suptitle_e, output_path / out_name_e,
                         do_permutation_test, n_permutations, lock_type=lock_type,
@@ -1763,6 +2056,15 @@ def group_ersp_analysis(subject_ids,
                         nave_list_left=_nv_l,
                         nave_list_right=_nv_r,
                     )
+                    if do_permutation_test:
+                        _log_perm(
+                            label='ROI-Group', roi=roi_cap, lock=lock_type,
+                            phase='learning', pair='Ep4-Ep1',
+                            cond_pair=f'{condition1}_vs_{condition2}',
+                            n_sub=len(_ids_both),
+                            n_sig=_ep4e1_result.get('n_sig_clusters', 0),
+                            n_total=_ep4e1_result.get('n_clusters', 0),
+                        )
                     all_results[f'epoch4_minus_epoch1_{condition1}_vs_{condition2}'] = {
                         'freqs': _ep_freqs, 'times': _ep_times}
                     print(f"  ✓ Ep4-Ep1 saved: {out_name_e}")
@@ -1783,8 +2085,9 @@ def group_ersp_analysis(subject_ids,
 
         tt_cap = test_type.capitalize()
         pair_labels = {
-            'first' : f'(Early {tt_cap} blocks)',
-            'second': f'(Late {tt_cap} blocks)',
+            'first'    : f'(Early {tt_cap} blocks)',
+            'second'   : f'(Late {tt_cap} blocks)',
+            'allblocks': f'(AllBlocks {tt_cap})',
         }
 
         # ── Colorbar 決策：外部優先，其次內部 unified_colorbar ──
@@ -1911,6 +2214,16 @@ def group_ersp_analysis(subject_ids,
                 nave_list_left=nave1_common,
                 nave_list_right=nave2_common,
             )
+            # ── 寫入全域摘要 ──
+            if do_permutation_test:
+                _log_perm(
+                    label='ROI-Group', roi=roi_cap, lock=lock_type,
+                    phase=f'testing_{test_type}', pair=pair_key,
+                    cond_pair=f'{condition1}_vs_{condition2}',
+                    n_sub=len(common_ids),
+                    n_sig=block_result.get('n_sig_clusters', 0),
+                    n_total=block_result.get('n_clusters', 0),
+                )
             all_results[pair_key] = {
                 **block_result,
                 'subject_ids'  : common_ids,
@@ -2380,10 +2693,10 @@ def auto_group_ersp_analysis(subject_ids,
                     _ab_vc, _ab_vd = _allblocks_vmaxes.get((lock_type, test_type, roi_lower), (None, None)) if unified_colorbar else (None, None)
                     if _ab_vc is not None:
                         print(f"  [colorbar] AllBlocks 使用 section colorbar: ±{_ab_vc:.4f} / ±{_ab_vd:.4f} dB")
-                    _plot_group_block(
+                    _ab_result = _plot_group_block(
                         arr_l, arr_r, freqs_p, times_p,
                         common, suptitle_p, Path(sub_dir_p) / out_name_p,
-                        False, 1000, lock_type=lock_type,
+                        do_permutation_test, n_permutations, lock_type=lock_type,
                         vmax_cond=_ab_vc,
                         vmax_diff=_ab_vd,
                         label_left=display_label1 or condition1,
@@ -2391,6 +2704,15 @@ def auto_group_ersp_analysis(subject_ids,
                         nave_list_left=nave_left_list,
                         nave_list_right=nave_right_list,
                     )
+                    if do_permutation_test:
+                        _log_perm(
+                            label='ROI-AllBlocks', roi=roi_name, lock=lock_type,
+                            phase=f'testing_{test_type}', pair='allblocks',
+                            cond_pair=f'{condition1}_vs_{condition2}',
+                            n_sub=len(common),
+                            n_sig=_ab_result.get('n_sig_clusters', 0),
+                            n_total=_ab_result.get('n_clusters', 0),
+                        )
 
                 # ── Motor-Perceptual Diff（三對）──
                 lock_cap = lock_type.capitalize()
@@ -2459,12 +2781,39 @@ def auto_group_ersp_analysis(subject_ids,
                     Path(sub_dir_mp).mkdir(parents=True, exist_ok=True)
                     suptitle_mp = f'Motor-Perceptual Diff | {_lbl_c1} vs {_lbl_c2} | {lock_cap}-locked | {roi_cap} ROI'
                     out_name_mp = f'group_motor_perceptual_diff_{lock_type}_{roi_lower}_{_pair_lbl}.png'
-                    _plot_group_motor_perceptual_diff(
+                    _mp_diff_result = _plot_group_motor_perceptual_diff(
                         arr_reg_diff, arr_ran_diff, freqs_mp, times_mp,
                         common_mp, suptitle_mp, Path(sub_dir_mp) / out_name_mp,
                         label_left=_lbl_c1, label_right=_lbl_c2,
                         vmax_cond=_mp_vmax_cond, vmax_inter=_mp_vmax_inter,
+                        do_permutation=do_permutation_test,
+                        n_permutations=n_permutations,
                     )
+                    if do_permutation_test and _c1 == condition1 and _c2 == condition2:
+                        _log_perm(
+                            label='MP-Diff-RegLeft', roi=roi_name, lock=lock_type,
+                            phase='testing_motor_vs_perceptual', pair='allblocks',
+                            cond_pair=f'{_c1}_vs_{_c2}',
+                            n_sub=len(common_mp),
+                            n_sig=_mp_diff_result.get('n_sig_reg', 0),
+                            n_total=_mp_diff_result.get('n_tot_reg', 0),
+                        )
+                        _log_perm(
+                            label='MP-Diff-RanRight', roi=roi_name, lock=lock_type,
+                            phase='testing_motor_vs_perceptual', pair='allblocks',
+                            cond_pair=f'{_c1}_vs_{_c2}',
+                            n_sub=len(common_mp),
+                            n_sig=_mp_diff_result.get('n_sig_ran', 0),
+                            n_total=_mp_diff_result.get('n_tot_ran', 0),
+                        )
+                        _log_perm(
+                            label='MP-Diff-Interaction', roi=roi_name, lock=lock_type,
+                            phase='testing_motor_vs_perceptual', pair='allblocks',
+                            cond_pair=f'{_c1}_vs_{_c2}',
+                            n_sub=len(common_mp),
+                            n_sig=_mp_diff_result.get('n_sig_inter', 0),
+                            n_total=_mp_diff_result.get('n_tot_inter', 0),
+                        )
 
         if any(c['lock_type'] == 'stimulus' for c in combos):
             print(f"\n⚠  Stimulus-locked data source:")
@@ -2611,6 +2960,30 @@ def auto_group_ersp_analysis(subject_ids,
         data_dir=h5_dir,
         subject_ids=subject_ids,
         output_csv_dir=r'C:\Experiment\ersp_csv',
+    )
+
+    # ════════════════════════════════════════════════════════════
+    # 全域 Permutation Test 摘要
+    # ════════════════════════════════════════════════════════════
+    print_perm_summary()
+
+    # ════════════════════════════════════════════════════════════
+    # G*Power 樣本數估算
+    # ════════════════════════════════════════════════════════════
+    print("\n" + "█"*70)
+    print("  G*Power 樣本數估算（基於 10 人 pilot data）")
+    print("  比較：regular_high vs random_low")
+    print("  Theta (4–8 Hz, −300 to +50 ms)  ─  Response-locked, Motor ROI")
+    print("  Alpha (8–13 Hz, +100 to +300 ms) ─  Stimulus-locked, Perceptual ROI")
+    print("█"*70)
+    compute_power_analysis(
+        h5_dir=h5_dir,
+        pkl_dir=pkl_dir,
+        subject_ids=subject_ids,
+        condition_left='regular_high',
+        condition_right='random_low',
+        alpha=0.05,
+        power_target=0.80,
     )
 
     return all_combo_results
