@@ -943,6 +943,8 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                                          label_left='Regular', label_right='Random',
                                          condition_left='Regular', condition_right='Random',
                                          stim_h5_dir=None,
+                                         do_permutation_test=False,
+                                         n_permutations=1000,
                                          _triplet_expanded=False,
                                          _electrode_vmaxes=None):
     """
@@ -1169,6 +1171,8 @@ def run_single_electrode_group_analysis(subject_ids, electrodes,
                 label_left=_ll, label_right=_lr,
                 condition_left=_cl, condition_right=_cr,
                 stim_h5_dir=stim_h5_dir,
+                do_permutation_test=do_permutation_test,
+                n_permutations=n_permutations,
                 _triplet_expanded=True,
                 _electrode_vmaxes=_electrode_vmaxes,
             )

@@ -30,8 +30,8 @@ from pathlib import Path
 #  ★ 使用前請修改以下路徑與受試者列表
 # ══════════════════════════════════════════════════════════════════
 H5_DIR      = r'C:\Experiment\Result\triplet\h5'   # response-locked .h5 目錄
-PKL_DIR = r'C:\Experiment\Result\h5'       # stimulus-locked .pkl 目錄
-                                                     # （stimulus AllBlocks .h5 也在此）
+PKL_DIR     = r'C:\Experiment\Result\h5'       # stimulus-locked .pkl 目錄
+                                               # （stimulus AllBlocks .h5 也在此）
 
 SUBJECT_IDS = [
     'sub0001', 'sub0002', 'sub0003', 'sub0004', 'sub0005',
@@ -66,6 +66,7 @@ ROI_GROUPS = {
 
 def _load_pkl(filepath):
     """讀取 stimulus-locked .pkl，回傳 (ersp_2d, freqs, times, nave)。"""
+    print(f"Reading {filepath} ...")   # ← 加這行
     with open(filepath, 'rb') as f:
         data = pickle.load(f)
     return data['ersp'], data['freqs'], data['times'], int(data.get('nave', -1))
@@ -294,15 +295,62 @@ def print_row(label, vals_l, vals_r, alpha, power_target, expected=''):
 
     res = _cohens_d_and_power(vals_l, vals_r, alpha, power_target)
     flag = '★' if expected == 'significant' else ' '
+
+    mean_l   = float(np.mean(vals_l))
+    mean_r   = float(np.mean(vals_r))
+    mean_diff = mean_l - mean_r
+    state_l  = 'ERS(+)' if mean_l   > 0 else 'ERD(-)'
+    state_r  = 'ERS(+)' if mean_r   > 0 else 'ERD(-)'
+    state_d  = 'ERS(+)' if mean_diff > 0 else 'ERD(-)'
+
     print(f"  {flag} {label}")
+    print(f"     {COND_L:>15s} = {mean_l:+.4f} dB [{state_l}]   "
+          f"{COND_R:>12s} = {mean_r:+.4f} dB [{state_r}]   "
+          f"diff = {mean_diff:+.4f} dB [{state_d}]")
     print(f"     N(pilot)={res['n']:2d}  │  "
-          f"mean_diff={res['mean_diff']:+.4f}  "
-          f"std_diff={res['std_diff']:.4f}")
-    print(f"     Cohen's d={res['d']:+.3f}  │  "
+          f"std_diff={res['std_diff']:.4f}  │  "
+          f"Cohen's d={res['d']:+.3f}  │  "
           f"N required={res['n_required']:4d}  │  "
           f"power@pilot={res['power_at_pilot']:.3f}")
     print()
+
+    res['mean_l']    = mean_l
+    res['mean_r']    = mean_r
+    res['mean_diff_abs'] = mean_diff
+    res['label']     = label
+    res['expected']  = expected
     return res
+
+
+def print_summary_table(all_results):
+    """所有條件跑完後印出彙整表格。"""
+    print("\n" + "═"*110)
+    print("  總結表格")
+    print("═"*110)
+    hdr = (f"  {'條件':<52}  {'reg_high':>9}  {'rand_low':>9}  "
+           f"{'diff':>8}  {'d':>7}  {'N req':>6}  {'pwr':>6}  {'預期'}")
+    print(hdr)
+    print("─"*110)
+    for res in all_results:
+        if res is None:
+            continue
+        short = res['label'].replace('Testing | ', '').replace('Learning | ', 'Lrn | ')
+        tag   = '★顯著' if res['expected'] == 'significant' else ('○消失' if res['expected'] == 'absent' else '      ')
+        sl    = '+' if res['mean_l'] > 0 else '-'
+        sr    = '+' if res['mean_r'] > 0 else '-'
+        sd    = '+' if res['mean_diff_abs'] > 0 else '-'
+        print(f"  {short:<52}  "
+              f"{sl}{abs(res['mean_l']):.4f}   "
+              f"{sr}{abs(res['mean_r']):.4f}   "
+              f"{sd}{abs(res['mean_diff_abs']):.4f}  "
+              f"{res['d']:+.3f}  "
+              f"{res['n_required']:6d}  "
+              f"{res['power_at_pilot']:.3f}  "
+              f"{tag}")
+    print("═"*110)
+    print("  ※ diff = regular_high − random_low（正值 = regular 功率較高）")
+    print("  ※ N required：one-tailed, α=0.05, power=0.80")
+    print("═"*110 + "\n")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -316,40 +364,26 @@ if __name__ == '__main__':
     print(f"  {COND_L}  vs  {COND_R}")
     print("█"*72 + "\n")
 
+    all_results = []
+
     # ── 學習階段 ───────────────────────────────────────────────
     print("━"*72)
     print("【學習階段】  Block7-11 ~ Block22-26（四個 block 組平均）")
     print("━"*72)
-    learning_results = {}
     for cfg in LEARNING_CONFIGS:
         vl, vr = run_learning(cfg)
         res = print_row(cfg['label'], vl, vr, ALPHA, POWER_TARGET)
-        if res:
-            learning_results[cfg['label']] = res
+        all_results.append(res)
 
     # ── 測驗階段 ───────────────────────────────────────────────
     print("━"*72)
     print("【測驗階段】  AllBlocks")
     print("━"*72)
-    testing_results = {}
-    sig_n_values = []
     for cfg in TESTING_CONFIGS:
         vl, vr = run_testing(cfg)
         res = print_row(cfg['label'], vl, vr, ALPHA, POWER_TARGET,
                         expected=cfg['expected'])
-        if res:
-            testing_results[cfg['label']] = res
-            if cfg['expected'] == 'significant':
-                sig_n_values.append(res['n_required'])
+        all_results.append(res)
 
-    # ── 最終建議 ───────────────────────────────────────────────
-    print("█"*72)
-    if sig_n_values:
-        n_base     = max(sig_n_values)
-        n_attrition = int(np.ceil(n_base * 1.15))
-        print(f"  ★ 測驗階段「預期顯著」中最大 N required = {n_base}")
-        print(f"  ★ 加計 15%% EEG attrition → 建議收案人數 = {n_attrition} 人")
-    print()
-    print("  ※ 「預期顯著」= MotorTest Theta ERD + PerceptualTest Alpha ERS")
-    print("  ※ 「預期消失」的 N required 僅供雙重解離驗證參考，不作為收案依據")
-    print("█"*72 + "\n")
+    # ── 彙整表格 ───────────────────────────────────────────────
+    print_summary_table(all_results)
