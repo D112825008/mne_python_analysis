@@ -1,0 +1,18 @@
+{
+    "sourceFile": "word_check.py",
+    "activeCommit": 0,
+    "commits": [
+        {
+            "activePatchIndex": 0,
+            "patches": [
+                {
+                    "date": 1781529822686,
+                    "content": "Index: \n===================================================================\n--- \n+++ \n"
+                }
+            ],
+            "date": 1781529822686,
+            "name": "Commit-0",
+            "content": "import matplotlib.font_manager as fm\r\nimport matplotlib.pyplot as plt\r\nfig, ax = plt.subplots()\r\nax.set_title(\"Test\")\r\nprint(ax.title.get_fontname())\r\nplt.close()"
+        }
+    ]
+}

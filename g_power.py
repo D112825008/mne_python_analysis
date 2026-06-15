@@ -354,6 +354,241 @@ def print_summary_table(all_results):
 
 
 # ══════════════════════════════════════════════════════════════════
+#  視覺化
+# ══════════════════════════════════════════════════════════════════
+
+def plot_results(all_results):
+    """
+    視覺化 G*Power 結果，輸出兩張圖：
+      Figure 1  gpower_ersp_bars.png
+        ├─ Motor ROI Theta (Response-locked)  分組長條圖
+        └─ Perceptual ROI Alpha (Stimulus-locked) 分組長條圖
+            每組三個條件：Learning / Motor Test / Perceptual Test
+            每條件兩根柱：regular_high（藍）vs random_low（灰）
+
+      Figure 2  gpower_summary.png
+        ├─ Cohen's d 水平長條圖（所有條件）
+        └─ 統計力 @ pilot N 水平長條圖（附 N required 標註）
+    """
+    try:
+        import matplotlib
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+    except ImportError:
+        print("⚠  matplotlib not found. Please run: pip install matplotlib")
+        return
+
+    valid = [r for r in all_results if r is not None]
+    if not valid:
+        print("⚠  No valid results to plot.")
+        return
+
+    # ── 全域樣式 ──────────────────────────────────────────────────
+    plt.rcParams.update({
+        'font.family':       'sans-serif',
+        'font.size':         10,
+        'axes.linewidth':    0.8,
+        'axes.grid':         True,
+        'grid.alpha':        0.3,
+        'grid.linewidth':    0.5,
+        'axes.spines.top':   False,
+        'axes.spines.right': False,
+    })
+
+    # ── 搜尋輔助（label 不分大小寫比對）─────────────────────────
+    def _f(*keys):
+        for r in valid:
+            lbl = r['label'].lower()
+            if all(k.lower() in lbl for k in keys):
+                return r
+        return None
+
+    # Motor ROI Theta (Response-locked)
+    th_lrn = _f('learning',    'response', 'motor',      'theta')
+    th_mtr = _f('motortest',   'response', 'motor',      'theta')
+    th_prc = _f('percepttest', 'response', 'motor',      'theta')
+    # Perceptual ROI Alpha (Stimulus-locked)
+    al_lrn = _f('learning',    'stimulus', 'perceptual', 'alpha')
+    al_mtr = _f('motortest',   'stimulus', 'perceptual', 'alpha')
+    al_prc = _f('percepttest', 'stimulus', 'perceptual', 'alpha')
+
+    # ── 顏色 ─────────────────────────────────────────────────────
+    C_REG  = '#2C6FAC'   # regular_high
+    C_RND  = '#AAAAAA'   # random_low
+    C_GOOD = '#1D9E75'   # 預期方向正確
+    C_BAD  = '#E24B4A'   # 方向錯誤
+    C_WARN = '#EF9F27'   # 應消失但仍存在
+    C_NEUT = '#888780'   # 學習階段 / 中性
+
+    # ════════════════════════════════════════════════════════════
+    # Figure 1：ERSP 分組長條圖
+    # ════════════════════════════════════════════════════════════
+    fig1, axes = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
+    fig1.suptitle(
+        f'ERSP Comparison: {COND_L} vs {COND_R}  '
+        f'(N = {valid[0]["n"]} pilot, one-tailed, \u03b1 = {ALPHA})',
+        fontsize=12, fontweight='bold'
+    )
+
+    grp_names = ['Learning', 'Motor Test', 'Perceptual Test']
+    x = np.arange(len(grp_names))
+    W = 0.35
+
+    # panel 設定：兩個子圖的參數
+    panels = [
+        dict(
+            ax      = axes[0],
+            items   = [th_lrn, th_mtr, th_prc],
+            title   = 'Motor ROI · Theta (4–8 Hz)\nResponse-locked  (−300 to +50 ms)',
+            ann     = [('—',                 C_NEUT),  # Learning
+                       ('★ sig. expected',   C_GOOD),  # Motor Test
+                       ('○ absent expected', C_WARN)], # Perceptual Test
+            exp_dir = -1,   # Theta ERD → 預期 d < 0
+        ),
+        dict(
+            ax      = axes[1],
+            items   = [al_lrn, al_mtr, al_prc],
+            title   = 'Perceptual ROI · Alpha (8–13 Hz)\nStimulus-locked  (+100 to +300 ms)',
+            ann     = [('—',                 C_NEUT),  # Learning
+                       ('○ absent expected', C_WARN),  # Motor Test
+                       ('★ sig. expected',   None)],   # Perceptual Test (color computed dynamically)
+            exp_dir = +1,   # Alpha ERS → 預期 d > 0
+        ),
+    ]
+
+    for panel in panels:
+        ax      = panel['ax']
+        items   = panel['items']
+        ann     = panel['ann']
+        exp_dir = panel['exp_dir']
+
+        vals_l = [r['mean_l'] if r else 0.0 for r in items]
+        vals_r = [r['mean_r'] if r else 0.0 for r in items]
+        d_vals = [r['d']      if r else 0.0 for r in items]
+
+        ax.bar(x - W/2, vals_l, width=W, color=C_REG, label='regular_high', zorder=3)
+        ax.bar(x + W/2, vals_r, width=W, color=C_RND, label='random_low',   zorder=3)
+        ax.axhline(0, color='black', linewidth=0.8, zorder=2)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(grp_names)
+        if ax is axes[0]:
+            ax.set_ylabel('ERSP (dB)')
+        ax.set_title(panel['title'], fontsize=10)
+
+        # ── d-value 標註（x 軸下方）─────────────────────────────
+        # tick_params pad 讓 x 刻度標籤下移，騰出標註空間
+        ax.tick_params(axis='x', pad=26)
+        for i, (lbl, col) in enumerate(ann):
+            r = items[i]
+            if r is None:
+                continue
+            d = d_vals[i]
+            if col is None:   # 動態決定（Alpha 預期顯著條件）
+                col = C_GOOD if (d * exp_dir) > 0 else C_BAD
+            # transform: x=data coords, y=axis fraction (0=bottom,1=top)
+            ax.text(x[i], -0.20,
+                    f'd = {d:+.3f}  {lbl}',
+                    transform=ax.get_xaxis_transform(),
+                    ha='center', va='top',
+                    fontsize=8.5, color=col, fontweight='bold')
+
+    # Legend — placed inside the right panel (upper area is blank for Alpha)
+    axes[1].legend(
+        handles=[
+            mpatches.Patch(color=C_REG, label='regular_high'),
+            mpatches.Patch(color=C_RND, label='random_low'),
+        ],
+        loc='upper right', frameon=True, framealpha=0.9,
+        fontsize=9, edgecolor='lightgray'
+    )
+    fig1.tight_layout()
+
+    out1 = 'gpower_ersp_bars.png'
+    fig1.savefig(out1, dpi=150, bbox_inches='tight')
+    print(f"\n  ✓ Figure 1 saved → {out1}")
+
+    # ════════════════════════════════════════════════════════════
+    # Figure 2：Cohen's d + 統計力彙整
+    # ════════════════════════════════════════════════════════════
+    ORDER = [
+        ('Lrn · Motor θ',        th_lrn, 'learning',    'theta'),
+        ('Lrn · Percept α',      al_lrn, 'learning',    'alpha'),
+        ('MtrTest · Motor θ ★',  th_mtr, 'significant', 'theta'),
+        ('PrcTest · Percept α ★', al_prc, 'significant', 'alpha'),
+        ('MtrTest · Percept α ○', al_mtr, 'absent',      'alpha'),
+        ('PrcTest · Motor θ ○',   th_prc, 'absent',      'theta'),
+    ]
+
+    slabels, d_all, pwr_all, nreq_all = [], [], [], []
+    c_d, c_p = [], []
+    for slbl, res, exp, band in ORDER:
+        if res is None:
+            continue
+        d   = res['d']
+        pwr = res['power_at_pilot']
+        slabels.append(slbl)
+        d_all.append(d)
+        pwr_all.append(pwr)
+        nreq_all.append(res['n_required'])
+
+        if exp == 'learning':
+            c_d.append(C_NEUT); c_p.append(C_NEUT)
+        elif exp == 'significant':
+            correct = (band == 'theta' and d < 0) or (band == 'alpha' and d > 0)
+            c_d.append(C_GOOD if correct else C_BAD)
+            c_p.append(C_GOOD if pwr >= 0.50 else C_BAD)
+        else:   # absent
+            c_d.append(C_WARN if abs(d) > 0.20 else C_NEUT)
+            c_p.append(C_WARN)
+
+    yp   = np.arange(len(slabels))
+    fig2, (axd, axp) = plt.subplots(1, 2, figsize=(14, 5))
+    fig2.suptitle(
+        "G*Power Summary  (one-tailed, \u03b1=0.05, target power=0.80)",
+        fontsize=11, fontweight='bold'
+    )
+
+    # ── Cohen's d 水平長條 ────────────────────────────────────
+    axd.barh(yp, d_all, color=c_d, height=0.5, zorder=3)
+    axd.axvline(0,    color='black', linewidth=0.8, zorder=2)
+    axd.axvline(-0.5, color='gray',  linewidth=0.7, linestyle='--',
+                alpha=0.6, label='|d| = 0.5 (medium)')
+    axd.axvline( 0.5, color='gray',  linewidth=0.7, linestyle='--', alpha=0.6)
+    axd.set_yticks(yp)
+    axd.set_yticklabels(slabels)
+    axd.set_xlabel("Cohen's d  (regular_high − random_low)")
+    axd.set_title("Effect size (Cohen's d)", fontsize=10)
+    axd.set_xlim(-1.15, 1.15)
+    axd.legend(frameon=False, fontsize=8, loc='lower right')
+    for i, dv in enumerate(d_all):
+        xoff = 0.04 if dv >= 0 else -0.04
+        ha   = 'left'  if dv >= 0 else 'right'
+        axd.text(dv + xoff, i, f'{dv:+.3f}', va='center', ha=ha, fontsize=8.5)
+
+    # ── 統計力水平長條 ────────────────────────────────────────
+    axp.barh(yp, pwr_all, color=c_p, height=0.5, zorder=3)
+    axp.axvline(0.80, color='#E24B4A', linewidth=1.5, linestyle='--',
+                label='target power = 0.80', zorder=4)
+    axp.set_yticks(yp)
+    axp.set_yticklabels(slabels)
+    axp.set_xlabel('Statistical Power @ pilot N')
+    axp.set_title('Statistical power (pilot N = 10)', fontsize=10)
+    axp.set_xlim(0, 1.05)
+    axp.legend(frameon=False, fontsize=9)
+    for i, (pv, nreq) in enumerate(zip(pwr_all, nreq_all)):
+        axp.text(pv + 0.02, i,
+                 f'{pv:.3f}   (N req = {nreq})',
+                 va='center', ha='left', fontsize=8.5)
+
+    fig2.tight_layout()
+    out2 = 'gpower_summary.png'
+    fig2.savefig(out2, dpi=150, bbox_inches='tight')
+    print(f"  ✓ Figure 2 saved → {out2}")
+    plt.show()
+
+
+# ══════════════════════════════════════════════════════════════════
 #  主程式
 # ══════════════════════════════════════════════════════════════════
 
@@ -387,3 +622,6 @@ if __name__ == '__main__':
 
     # ── 彙整表格 ───────────────────────────────────────────────
     print_summary_table(all_results)
+
+    # ── 視覺化 ─────────────────────────────────────────────────
+    plot_results(all_results)
