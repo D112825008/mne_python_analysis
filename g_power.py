@@ -66,7 +66,7 @@ ROI_GROUPS = {
 
 def _load_pkl(filepath):
     """讀取 stimulus-locked .pkl，回傳 (ersp_2d, freqs, times, nave)。"""
-    print(f"Reading {filepath} ...")   # ← 加這行
+    print(f"Reading {filepath} ...")   #
     with open(filepath, 'rb') as f:
         data = pickle.load(f)
     return data['ersp'], data['freqs'], data['times'], int(data.get('nave', -1))

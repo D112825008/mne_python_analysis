@@ -926,8 +926,8 @@ def _plot_single_electrode_comparison(arr_left, arr_right, freqs, times,
         ax.set_title(title, fontsize=11, fontweight='bold')
         ax.set_xlim([x_min, x_max])
         plt.colorbar(im, ax=ax, label=cb_lbl)
-    if do_permutation and sig_mask is not None:
-        axes[2].set_title(axes[2].get_title() + '\n(black outline: p<0.05)', fontsize=10)
+#    if do_permutation and sig_mask is not None:
+#        axes[2].set_title(axes[2].get_title() + '\n(black outline: p<0.05)', fontsize=10)
 
     fig.suptitle(f'Group ERSP Comparison\n{suptitle} | Electrode: {electrode_name}',
                  fontsize=12, fontweight='bold')
@@ -1628,8 +1628,8 @@ def _plot_group_motor_perceptual_diff(arr_reg_diff, arr_ran_diff, freqs, times,
         ax.set_title(title, fontsize=11, fontweight='bold')
         ax.set_xlim([x_min, x_max])
         plt.colorbar(im, ax=ax, label=cbl)
-    if do_permutation:
-        axes[2].set_title(axes[2].get_title() + '\n(black outline: p<0.05, cluster-corrected)', fontsize=10)
+#    if do_permutation:
+#        axes[2].set_title(axes[2].get_title() + '\n(black outline: p<0.05, cluster-corrected)', fontsize=10)
 
     fig.suptitle(f'Group Motor vs Perceptual Diff\n{suptitle}',
                  fontsize=12, fontweight='bold')
