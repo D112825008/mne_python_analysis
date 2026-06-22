@@ -174,10 +174,19 @@ LEARNING_CONFIGS = [
 
 
 def run_learning(cfg):
-    """學習階段：讀取四個 block 組，每位受試者算 regular − random 差值。"""
-    vals_l, vals_r = [], []
+    """
+    學習階段：對每位受試者，在每個 block 組計算 RegH-RandL 差值，
+    再以 block 序號（1,2,3,4）為 X、差值為 Y 做線性回歸，取個別斜率
+    作為「序列學習的時間趨勢」（model changes across blocks）。
+    斜率 < 0 代表 RegH 相對 RandL 的 Theta 在學習過程中逐漸更大的 ERD。
+    回傳 slopes, per_sub_diffs, per_sub_means。
+    """
+    x = np.arange(1, len(LEARNING_BLOCK_GROUPS) + 1, dtype=float)
+    x_c = x - x.mean()   # 中心化，讓截距等於整體均值
+
+    slopes, per_sub_diffs, per_sub_means = [], [], []
     for sid in SUBJECT_IDS:
-        sub_l, sub_r = [], []
+        diffs = []
         for blk in LEARNING_BLOCK_GROUPS:
             if cfg['lock'] == 'stimulus':
                 fp_l = (Path(PKL_DIR) /
@@ -185,106 +194,283 @@ def run_learning(cfg):
                 fp_r = (Path(PKL_DIR) /
                         f'{sid}_learning_stimulus_{cfg["roi_lower"]}_{COND_R}_{blk}_ersp.pkl')
                 if not fp_l.exists() or not fp_r.exists():
-                    continue
+                    diffs.append(None); continue
                 try:
                     ersp_l, freqs, times, _ = _load_pkl(fp_l)
                     ersp_r, _,     _,     _ = _load_pkl(fp_r)
                 except Exception as e:
-                    print(f"    ⚠ {sid} {blk} pkl 讀取失敗: {e}")
-                    continue
+                    print(f"    \u26a0 {sid} {blk} pkl \u8b80\u53d6\u5931\u6557: {e}")
+                    diffs.append(None); continue
             else:
                 fp_l = (Path(H5_DIR) /
                         f'{sid}_Response_Learning_{blk}_{COND_L}_ERSP.h5')
                 fp_r = (Path(H5_DIR) /
                         f'{sid}_Response_Learning_{blk}_{COND_R}_ERSP.h5')
                 if not fp_l.exists() or not fp_r.exists():
-                    continue
+                    diffs.append(None); continue
                 try:
                     ersp_l, freqs, times, _ = _load_h5(fp_l, cfg['roi'])
                     ersp_r, _,     _,     _ = _load_h5(fp_r, cfg['roi'])
                 except Exception as e:
-                    print(f"    ⚠ {sid} {blk} h5 讀取失敗: {e}")
-                    continue
-            sub_l.append(_roi_mean(ersp_l, freqs, times, cfg['freq'], cfg['time']))
-            sub_r.append(_roi_mean(ersp_r, freqs, times, cfg['freq'], cfg['time']))
-        if sub_l:
-            vals_l.append(float(np.mean(sub_l)))
-            vals_r.append(float(np.mean(sub_r)))
-    return vals_l, vals_r
+                    print(f"    \u26a0 {sid} {blk} h5 \u8b80\u53d6\u5931\u6557: {e}")
+                    diffs.append(None); continue
+            d = (_roi_mean(ersp_l, freqs, times, cfg['freq'], cfg['time']) -
+                 _roi_mean(ersp_r, freqs, times, cfg['freq'], cfg['time']))
+            diffs.append(d)
+
+        valid = [d is not None for d in diffs]
+        if sum(valid) < 2:
+            continue
+        xv = x_c[valid]
+        yv = np.array([d for d, m in zip(diffs, valid) if m])
+        slope = float(np.dot(xv, yv) / np.dot(xv, xv))
+        slopes.append(slope)
+        per_sub_diffs.append([d if d is not None else np.nan for d in diffs])
+        per_sub_means.append(float(np.nanmean(yv)))
+    return slopes, per_sub_diffs, per_sub_means
 
 
 # ══════════════════════════════════════════════════════════════════
 #  測驗階段：AllBlocks（每位受試者一個檔案）
 # ══════════════════════════════════════════════════════════════════
 
-TESTING_CONFIGS = [
-    # ── 預期顯著（G*Power 的主要依據）──────────────────────────
+# 測驗階段配置：定義兩個「神經測量」各自的參數
+# 每個測量都要計算 Task(Motor/Perceptual) × Condition(RegH/RandL) 的交互作用，
+# 而不是分開算 Motor Test 跟 Perceptual Test 各自的 t-test。
+# 原因：研究問題是「Motor 跟 Perceptual 的序列效果是否有差異」，
+# 這是一個交互作用問題，不是兩個獨立的主效果問題。
+# 用分開的 t-test 無法推論交互作用（即使一個顯著一個不顯著也不行）。
+TESTING_NEURAL_CONFIGS = [
     dict(
-        label       = 'Testing | MotorTest    | Response | Motor      | Theta ERD  ← 預期顯著',
-        lock        = 'response',
-        cond_name   = 'MotorTest',
-        roi         = 'Motor',
-        freq        = (4,  8),
-        time        = (-0.300, 0.050),
-        expected    = 'significant',
+        label    = 'Testing | Motor ROI | Theta ERD | Response-locked',
+        lock     = 'response',
+        roi      = 'Motor',
+        freq     = (4,  8),
+        time     = (-0.300, 0.050),
+        # 預期方向：Motor Test 的 RegH-RandL 差值（負值=ERD）
+        # 應該大於 Perceptual Test 的對應差值
+        # → interaction = motor_diff - percept_diff 預期為負
+        exp_dir  = 'negative',
     ),
     dict(
-        label       = 'Testing | PerceptTest  | Stimulus | Perceptual | Alpha ERS  ← 預期顯著',
-        lock        = 'stimulus',
-        cond_name   = 'PerceptualTest',
-        roi         = 'Perceptual',
-        freq        = (8, 13),
-        time        = (0.100, 0.300),
-        expected    = 'significant',
-    ),
-    # ── 預期消失（雙重解離的另一半）────────────────────────────
-    dict(
-        label       = 'Testing | MotorTest    | Stimulus | Perceptual | Alpha ERS  ← 預期消失',
-        lock        = 'stimulus',
-        cond_name   = 'MotorTest',
-        roi         = 'Perceptual',
-        freq        = (8, 13),
-        time        = (0.100, 0.300),
-        expected    = 'absent',
-    ),
-    dict(
-        label       = 'Testing | PerceptTest  | Response | Motor      | Theta ERD  ← 預期消失',
-        lock        = 'response',
-        cond_name   = 'PerceptualTest',
-        roi         = 'Motor',
-        freq        = (4,  8),
-        time        = (-0.300, 0.050),
-        expected    = 'absent',
+        label    = 'Testing | Perceptual ROI | Alpha ERS | Stimulus-locked',
+        lock     = 'stimulus',
+        roi      = 'Perceptual',
+        freq     = (8, 13),
+        time     = (0.100, 0.300),
+        # 預期方向：Perceptual Test 的 RegH-RandL 差值（正值=ERS）
+        # 應該大於 Motor Test 的對應差值
+        # → interaction = motor_diff - percept_diff 預期為負（或 percept>motor 為正）
+        # 這裡定義為 percept_diff - motor_diff，使預期方向一致為正
+        exp_dir  = 'positive',
     ),
 ]
 
 
-def run_testing(cfg):
-    """測驗階段：每位受試者讀一個 AllBlocks 檔案。"""
-    lock_cap = cfg['lock'].capitalize()
-    # response-locked → h5_dir；stimulus-locked → pkl_dir（但格式是 .h5）
-    base_dir = Path(H5_DIR) if cfg['lock'] == 'response' else Path(PKL_DIR)
+def _load_testing_val(sid, lock, cond_name, roi, freq, time):
+    """
+    讀取單一受試者、單一任務條件（MotorTest/PerceptualTest）、
+    單一刺激條件（regular_high/random_low）的 ERSP 均值。
+    回傳 (val_regh, val_randl) 或 (None, None)。
+    """
+    lock_cap = lock.capitalize()
+    base_dir = Path(H5_DIR) if lock == 'response' else Path(PKL_DIR)
+    fp_l = base_dir / f'{sid}_{lock_cap}_{cond_name}_AllBlocks_{COND_L}_ERSP.h5'
+    fp_r = base_dir / f'{sid}_{lock_cap}_{cond_name}_AllBlocks_{COND_R}_ERSP.h5'
+    if not fp_l.exists() or not fp_r.exists():
+        return None, None
+    try:
+        ersp_l, freqs, times, _ = _load_h5(fp_l, roi)
+        ersp_r, _,     _,     _ = _load_h5(fp_r, roi)
+    except Exception as e:
+        print(f"    ⚠ {sid} {cond_name} 讀取失敗: {e}")
+        return None, None
+    return (_roi_mean(ersp_l, freqs, times, freq, time),
+            _roi_mean(ersp_r, freqs, times, freq, time))
 
-    vals_l, vals_r = [], []
+
+def run_testing_interaction(cfg):
+    """
+    計算 Task × Condition 交互作用分數。
+
+    對每位受試者：
+      motor_diff   = ERSP(MotorTest, RegH)      - ERSP(MotorTest, RandL)
+      percept_diff = ERSP(PerceptualTest, RegH) - ERSP(PerceptualTest, RandL)
+      interaction  = motor_diff - percept_diff
+        （如果 exp_dir=='positive' 則取 percept_diff - motor_diff，
+          讓正值=預期方向，方便閱讀）
+
+    回傳 interaction 分數的 list，以及各任務條件的原始均值（供描述統計用）。
+    """
+    interactions   = []
+    motor_regh_all = []
+    motor_rand_all = []
+    perc_regh_all  = []
+    perc_rand_all  = []
+
     for sid in SUBJECT_IDS:
-        fp_l = base_dir / f'{sid}_{lock_cap}_{cfg["cond_name"]}_AllBlocks_{COND_L}_ERSP.h5'
-        fp_r = base_dir / f'{sid}_{lock_cap}_{cfg["cond_name"]}_AllBlocks_{COND_R}_ERSP.h5'
-        if not fp_l.exists() or not fp_r.exists():
+        m_h, m_l = _load_testing_val(sid, cfg['lock'], 'MotorTest',
+                                     cfg['roi'], cfg['freq'], cfg['time'])
+        p_h, p_l = _load_testing_val(sid, cfg['lock'], 'PerceptualTest',
+                                     cfg['roi'], cfg['freq'], cfg['time'])
+        if any(v is None for v in [m_h, m_l, p_h, p_l]):
             continue
-        try:
-            ersp_l, freqs, times, _ = _load_h5(fp_l, cfg['roi'])
-            ersp_r, _,     _,     _ = _load_h5(fp_r, cfg['roi'])
-        except Exception as e:
-            print(f"    ⚠ {sid} {cfg['cond_name']} AllBlocks 讀取失敗: {e}")
-            continue
-        vals_l.append(_roi_mean(ersp_l, freqs, times, cfg['freq'], cfg['time']))
-        vals_r.append(_roi_mean(ersp_r, freqs, times, cfg['freq'], cfg['time']))
-    return vals_l, vals_r
+
+        motor_diff   = m_h - m_l
+        percept_diff = p_h - p_l
+        # 統一讓正值 = 預期方向（Motor ROI Theta: motor_diff < percept_diff → motor-percept < 0
+        # 所以 Theta 用 motor-percept；Alpha 用 percept-motor，兩者預期方向都是負的）
+        # 實際上為了可讀性，都用 motor_diff - percept_diff，用 exp_dir 標示方向
+        interaction = motor_diff - percept_diff
+
+        interactions.append(interaction)
+        motor_regh_all.append(m_h)
+        motor_rand_all.append(m_l)
+        perc_regh_all.append(p_h)
+        perc_rand_all.append(p_l)
+
+    return (interactions,
+            motor_regh_all, motor_rand_all,
+            perc_regh_all,  perc_rand_all)
+
+
+def _cohens_d_one_sample(vals, alpha, power_target):
+    """
+    單樣本（對照值=0）Cohen's d_z、95% CI 與 G*Power 樣本數。
+    用於交互作用分數：H0: mean(interaction) = 0。
+    CI 用 t 分布：mean ± t_{α/2, df=n-1} × SE。
+    """
+    from statsmodels.stats.power import TTestPower
+    from scipy import stats as _stats
+    pwr = TTestPower()
+    arr    = np.array(vals)
+    n      = len(arr)
+    mean_v = float(arr.mean())
+    std_v  = float(arr.std(ddof=1))
+    se     = std_v / np.sqrt(n)
+    d      = mean_v / std_v if std_v > 1e-12 else 0.0
+    # 95% CI（兩尾 t，df = n-1）
+    t_crit = float(_stats.t.ppf(0.975, df=n-1))
+    ci_lo  = mean_v - t_crit * se
+    ci_hi  = mean_v + t_crit * se
+    n_req  = int(np.ceil(
+        pwr.solve_power(effect_size=abs(d), alpha=alpha,
+                        power=power_target, alternative='larger')
+    ))
+    pwr_now = float(
+        pwr.solve_power(effect_size=abs(d), alpha=alpha,
+                        nobs=n, alternative='larger')
+    )
+    return dict(n=n, d=d, mean=mean_v, std=std_v, se=se,
+                ci_lo=ci_lo, ci_hi=ci_hi,
+                n_required=n_req, power_at_pilot=pwr_now)
+
+
+def print_interaction_row(cfg, interactions,
+                          motor_regh, motor_rand,
+                          perc_regh,  perc_rand):
+    """印出交互作用分析結果。"""
+    n = len(interactions)
+    if n < 3:
+        print(f"  ⚠  {cfg['label']} — 有效受試者不足（{n}），跳過\n")
+        return None
+
+    res = _cohens_d_one_sample(interactions, ALPHA, POWER_TARGET)
+
+    mean_m_h = float(np.mean(motor_regh))
+    mean_m_l = float(np.mean(motor_rand))
+    mean_p_h = float(np.mean(perc_regh))
+    mean_p_l = float(np.mean(perc_rand))
+    mean_m_diff = mean_m_h - mean_m_l
+    mean_p_diff = mean_p_h - mean_p_l
+    mean_inter  = float(np.mean(interactions))   # = mean_m_diff - mean_p_diff
+
+    print(f"  ★ {cfg['label']}")
+    print(f"     MotorTest:      RegH={mean_m_h:+.4f}  RandL={mean_m_l:+.4f}  "
+          f"diff={mean_m_diff:+.4f} dB")
+    print(f"     PerceptualTest: RegH={mean_p_h:+.4f}  RandL={mean_p_l:+.4f}  "
+          f"diff={mean_p_diff:+.4f} dB")
+    print(f"     Interaction (MotorDiff - PerceptDiff) = {mean_inter:+.4f} dB  "
+          f"[預期方向: {'< 0 (Motor ERD 更大)' if cfg['exp_dir']=='negative' else '> 0 (Percept ERS 更大)'}]")
+    print(f"     N(pilot)={res['n']}  │  std={res['std']:.4f}  │  "
+          f"Cohen's d_z={res['d']:+.3f}  │  "
+          f"95% CI [{res['ci_lo']:+.4f}, {res['ci_hi']:+.4f}]  │  "
+          f"N required={res['n_required']}  │  "
+          f"power@pilot={res['power_at_pilot']:.3f}")
+    print()
+
+    res.update({
+        'label': cfg['label'],
+        'exp_dir': cfg['exp_dir'],
+        'mean_m_diff': mean_m_diff,
+        'mean_p_diff': mean_p_diff,
+        'mean_interaction': mean_inter,
+        # 保留給視覺化用
+        'motor_regh': mean_m_h, 'motor_rand': mean_m_l,
+        'perc_regh':  mean_p_h, 'perc_rand':  mean_p_l,
+    })
+    return res
 
 
 # ══════════════════════════════════════════════════════════════════
 #  輸出格式化
 # ══════════════════════════════════════════════════════════════════
+
+def print_learning_slope_row(label, slopes, per_sub_diffs, alpha, power_target):
+    """
+    Learning 階段斜率結果輸出。
+    slopes: 每位受試者的線性回歸斜率（dB / block-step）。
+    H0: mean(slope) = 0（RegH-RandL ERSP 沒有跨 block 趨勢）。
+    補上 95% CI 與 G*Power 樣本數。
+    """
+    from scipy import stats as _stats
+    from statsmodels.stats.power import TTestPower
+
+    n = len(slopes)
+    if n < 3:
+        print(f"  \u26a0  {label} — 有效受試者不足（{n}），跳過\n")
+        return None
+
+    arr  = np.array(slopes)
+    mean_s = float(arr.mean())
+    std_s  = float(arr.std(ddof=1))
+    se_s   = std_s / np.sqrt(n)
+    d      = mean_s / std_s if std_s > 1e-12 else 0.0
+    t_crit = float(_stats.t.ppf(0.975, df=n-1))
+    ci_lo  = mean_s - t_crit * se_s
+    ci_hi  = mean_s + t_crit * se_s
+    t_stat, p_val = _stats.ttest_1samp(arr, 0)
+
+    pwr_obj = TTestPower()
+    n_req = int(np.ceil(
+        pwr_obj.solve_power(effect_size=abs(d), alpha=alpha,
+                            power=power_target, alternative='larger')
+    ))
+    pwr_now = float(
+        pwr_obj.solve_power(effect_size=abs(d), alpha=alpha,
+                            nobs=n, alternative='larger')
+    )
+
+    # 每個 block 組的跨人均值（供描述統計）
+    per_block = np.nanmean(np.array(per_sub_diffs), axis=0) if per_sub_diffs else []
+    blk_str = "  ".join([f"Blk{i+1}={v:+.4f}" for i, v in enumerate(per_block)])
+
+    print(f"  \u2605 {label}")
+    print(f"     Group means per block: {blk_str}")
+    print(f"     Slope mean={mean_s:+.5f} dB/step  std={std_s:.5f}  SE={se_s:.5f}")
+    print(f"     t({n-1})={t_stat:+.3f}  p={p_val:.3f}  (two-tailed, for reference)")
+    print(f"     Cohen's d_z={d:+.3f}  95% CI [{ci_lo:+.5f}, {ci_hi:+.5f}]")
+    print(f"     N required={n_req}  power@pilot={pwr_now:.3f}")
+    print()
+
+    return dict(label=label, type='learning_slope',
+                n=n, mean_slope=mean_s, std_slope=std_s,
+                d=d, ci_lo=ci_lo, ci_hi=ci_hi,
+                t_stat=t_stat, p_val=p_val,
+                n_required=n_req, power_at_pilot=pwr_now,
+                per_block=list(per_block),
+                per_sub_diffs=per_sub_diffs)
+
 
 def print_row(label, vals_l, vals_r, alpha, power_target, expected=''):
     n = len(vals_l)
@@ -323,52 +509,48 @@ def print_row(label, vals_l, vals_r, alpha, power_target, expected=''):
 
 
 def print_summary_table(all_results):
-    """所有條件跑完後印出彙整表格。"""
-    print("\n" + "═"*110)
+    """所有條件跑完後印出彙整表格（含 CI）。"""
+    print("\n" + "═"*120)
     print("  總結表格")
-    print("═"*110)
-    hdr = (f"  {'條件':<52}  {'reg_high':>9}  {'rand_low':>9}  "
-           f"{'diff':>8}  {'d':>7}  {'N req':>6}  {'pwr':>6}  {'預期'}")
-    print(hdr)
-    print("─"*110)
+    print("  ※ Learning：斜率檢定（H0: slope=0），d_z = mean(slope)/std(slope)")
+    print("  ※ Testing ：Task × Condition 交互作用，d_z = mean(interaction)/std(interaction)")
+    print("  ※ CI 均為 95%（t 分布，兩尾）")
+    print("═"*120)
     for res in all_results:
         if res is None:
             continue
-        short = res['label'].replace('Testing | ', '').replace('Learning | ', 'Lrn | ')
-        tag   = '★顯著' if res['expected'] == 'significant' else ('○消失' if res['expected'] == 'absent' else '      ')
-        sl    = '+' if res['mean_l'] > 0 else '-'
-        sr    = '+' if res['mean_r'] > 0 else '-'
-        sd    = '+' if res['mean_diff_abs'] > 0 else '-'
-        print(f"  {short:<52}  "
-              f"{sl}{abs(res['mean_l']):.4f}   "
-              f"{sr}{abs(res['mean_r']):.4f}   "
-              f"{sd}{abs(res['mean_diff_abs']):.4f}  "
-              f"{res['d']:+.3f}  "
-              f"{res['n_required']:6d}  "
-              f"{res['power_at_pilot']:.3f}  "
-              f"{tag}")
-    print("═"*110)
-    print("  ※ diff = regular_high − random_low（正值 = regular 功率較高）")
+        if res.get('type') == 'learning_slope':
+            short = res['label'].replace('Learning | ', 'Lrn | ')
+            print(f"  {short}")
+            print(f"    slope={res['mean_slope']:+.5f} dB/step  "
+                  f"d_z={res['d']:+.3f}  "
+                  f"95% CI [{res['ci_lo']:+.5f}, {res['ci_hi']:+.5f}]  "
+                  f"N_req={res['n_required']}  pwr={res['power_at_pilot']:.3f}")
+        elif 'mean_interaction' in res:
+            short = res['label'].replace('Testing | ', 'Test | ')
+            print(f"  {short}")
+            print(f"    Motor diff={res['mean_m_diff']:+.4f}  "
+                  f"Percept diff={res['mean_p_diff']:+.4f}  "
+                  f"Interaction={res['mean_interaction']:+.4f}  "
+                  f"d_z={res['d']:+.3f}  "
+                  f"95% CI [{res['ci_lo']:+.4f}, {res['ci_hi']:+.4f}]  "
+                  f"N_req={res['n_required']}  pwr={res['power_at_pilot']:.3f}")
+        print()
+    print("═"*120)
     print("  ※ N required：one-tailed, α=0.05, power=0.80")
-    print("═"*110 + "\n")
+    print("═"*120 + "\n")
 
 
-# ══════════════════════════════════════════════════════════════════
-#  視覺化
-# ══════════════════════════════════════════════════════════════════
-
-def plot_results(all_results):
+def plot_results(all_results, testing_results=None, learning_results=None):
     """
-    視覺化 G*Power 結果，輸出兩張圖：
-      Figure 1  gpower_ersp_bars.png
-        ├─ Motor ROI Theta (Response-locked)  分組長條圖
-        └─ Perceptual ROI Alpha (Stimulus-locked) 分組長條圖
-            每組三個條件：Learning / Motor Test / Perceptual Test
-            每條件兩根柱：regular_high（藍）vs random_low（灰）
+    視覺化結果。
 
-      Figure 2  gpower_summary.png
-        ├─ Cohen's d 水平長條圖（所有條件）
-        └─ 統計力 @ pilot N 水平長條圖（附 N required 標註）
+    Figure 1：學習階段 ERSP 長條圖（RegH vs RandL，不變）
+    Figure 2：測驗階段交互作用圖
+      左：Motor ROI Theta — MotorTest vs PerceptualTest 各自的 RegH-RandL diff，
+          加上交互作用分數與 d_z
+      右：Perceptual ROI Alpha — 同上
+    Figure 3：d_z 跟統計力彙整（學習 + 測驗交互作用）
     """
     try:
         import matplotlib
@@ -378,214 +560,105 @@ def plot_results(all_results):
         print("⚠  matplotlib not found. Please run: pip install matplotlib")
         return
 
-    valid = [r for r in all_results if r is not None]
-    if not valid:
+    valid_all = [r for r in all_results if r is not None]
+    if not valid_all:
         print("⚠  No valid results to plot.")
         return
 
-    # ── 全域樣式 ──────────────────────────────────────────────────
-    plt.rcParams.update({
-        'font.family':       'sans-serif',
-        'font.size':         10,
-        'axes.linewidth':    0.8,
-        'axes.grid':         True,
-        'grid.alpha':        0.3,
-        'grid.linewidth':    0.5,
-        'axes.spines.top':   False,
-        'axes.spines.right': False,
-    })
-
-    # ── 搜尋輔助（label 不分大小寫比對）─────────────────────────
-    def _f(*keys):
-        for r in valid:
-            lbl = r['label'].lower()
-            if all(k.lower() in lbl for k in keys):
-                return r
-        return None
-
-    # Motor ROI Theta (Response-locked)
-    th_lrn = _f('learning',    'response', 'motor',      'theta')
-    th_mtr = _f('motortest',   'response', 'motor',      'theta')
-    th_prc = _f('percepttest', 'response', 'motor',      'theta')
-    # Perceptual ROI Alpha (Stimulus-locked)
-    al_lrn = _f('learning',    'stimulus', 'perceptual', 'alpha')
-    al_mtr = _f('motortest',   'stimulus', 'perceptual', 'alpha')
-    al_prc = _f('percepttest', 'stimulus', 'perceptual', 'alpha')
-
-    # ── 顏色 ─────────────────────────────────────────────────────
-    C_REG  = '#2C6FAC'   # regular_high
-    C_RND  = '#AAAAAA'   # random_low
-    C_GOOD = '#1D9E75'   # 預期方向正確
-    C_BAD  = '#E24B4A'   # 方向錯誤
-    C_WARN = '#EF9F27'   # 應消失但仍存在
-    C_NEUT = '#888780'   # 學習階段 / 中性
+    C_REG  = '#2C6FAC'
+    C_RND  = '#AAAAAA'
+    C_MTR  = '#E74C3C'
+    C_PRC  = '#27AE60'
+    C_NEUT = '#888780'
 
     # ════════════════════════════════════════════════════════════
-    # Figure 1：ERSP 分組長條圖
+    # Figure 1：學習階段長條圖（RegH vs RandL，保留原本邏輯）
     # ════════════════════════════════════════════════════════════
-    fig1, axes = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
-    fig1.suptitle(
-        f'ERSP Comparison: {COND_L} vs {COND_R}  '
-        f'(N = {valid[0]["n"]} pilot, one-tailed, \u03b1 = {ALPHA})',
-        fontsize=12, fontweight='bold'
-    )
+    lrn_results = learning_results if learning_results else [r for r in valid_all if r and r.get('type')=='learning_slope']
+    if lrn_results:
+        fig1, axes = plt.subplots(1, len(lrn_results), figsize=(8*len(lrn_results), 5), sharey=False)
+        if len(lrn_results) == 1:
+            axes = [axes]
+        fig1.suptitle(
+            'Learning Phase: RegH - RandL Slope across Blocks\n'
+            '(model changes across blocks; slope < 0 = increasing ERD for RegH)',
+            fontsize=11, fontweight='bold')
+        blk_labels = [b.replace('Block','Blk') for b in LEARNING_BLOCK_GROUPS]
+        x_blk = np.arange(1, len(LEARNING_BLOCK_GROUPS)+1)
+        for ax, res in zip(axes, lrn_results):
+            if res is None: continue
+            pb = np.array(res['per_block'])
+            # 個別受試者折線（淡色）
+            for sub_d in res['per_sub_diffs']:
+                yd = np.array(sub_d)
+                ax.plot(x_blk, yd, color='#AAAAAA', linewidth=0.8, alpha=0.5)
+            # 群體均值折線
+            ax.plot(x_blk, pb, 'o-', color=C_MTR, linewidth=2.2, markersize=7, label='Group mean')
+            ax.axhline(0, color='black', linewidth=0.8, linestyle='--', alpha=0.5)
+            # 回歸線
+            x_c = x_blk - x_blk.mean()
+            y_fit = res['mean_slope'] * x_c + np.nanmean(pb)
+            ax.plot(x_blk, y_fit, color=C_PRC, linewidth=1.8, linestyle='--', label=f"slope={res['mean_slope']:+.5f}")
+            ax.set_xticks(x_blk)
+            ax.set_xticklabels(blk_labels, fontsize=9)
+            ax.set_ylabel('RegH - RandL ERSP (dB)')
+            ax.set_title(res['label'].replace('Learning | ', ''), fontsize=9)
+            ax.legend(fontsize=8)
+            ax.text(0.5, 0.02,
+                    f"d_z={res['d']:+.3f}  95% CI [{res['ci_lo']:+.5f}, {res['ci_hi']:+.5f}]  N_req={res['n_required']}",
+                    transform=ax.transAxes, ha='center', fontsize=8.5,
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        fig1.tight_layout()
+        fig1.savefig('gpower_learning.png', dpi=150, bbox_inches='tight')
+        print("  ✓ Figure 1 saved → gpower_learning.png")
 
-    grp_names = ['Learning', 'Motor Test', 'Perceptual Test']
-    x = np.arange(len(grp_names))
-    W = 0.35
-
-    # panel 設定：兩個子圖的參數
-    panels = [
-        dict(
-            ax      = axes[0],
-            items   = [th_lrn, th_mtr, th_prc],
-            title   = 'Motor ROI · Theta (4–8 Hz)\nResponse-locked  (−300 to +50 ms)',
-            ann     = [('—',                 C_NEUT),  # Learning
-                       ('★ sig. expected',   C_GOOD),  # Motor Test
-                       ('○ absent expected', C_WARN)], # Perceptual Test
-            exp_dir = -1,   # Theta ERD → 預期 d < 0
-        ),
-        dict(
-            ax      = axes[1],
-            items   = [al_lrn, al_mtr, al_prc],
-            title   = 'Perceptual ROI · Alpha (8–13 Hz)\nStimulus-locked  (+100 to +300 ms)',
-            ann     = [('—',                 C_NEUT),  # Learning
-                       ('○ absent expected', C_WARN),  # Motor Test
-                       ('★ sig. expected',   None)],   # Perceptual Test (color computed dynamically)
-            exp_dir = +1,   # Alpha ERS → 預期 d > 0
-        ),
-    ]
-
-    for panel in panels:
-        ax      = panel['ax']
-        items   = panel['items']
-        ann     = panel['ann']
-        exp_dir = panel['exp_dir']
-
-        vals_l = [r['mean_l'] if r else 0.0 for r in items]
-        vals_r = [r['mean_r'] if r else 0.0 for r in items]
-        d_vals = [r['d']      if r else 0.0 for r in items]
-
-        ax.bar(x - W/2, vals_l, width=W, color=C_REG, label='regular_high', zorder=3)
-        ax.bar(x + W/2, vals_r, width=W, color=C_RND, label='random_low',   zorder=3)
-        ax.axhline(0, color='black', linewidth=0.8, zorder=2)
-
-        ax.set_xticks(x)
-        ax.set_xticklabels(grp_names)
-        if ax is axes[0]:
+    # ════════════════════════════════════════════════════════════
+    # Figure 2：測驗階段 Task × Condition 交互作用
+    # ════════════════════════════════════════════════════════════
+    tst_results = [r for r in valid_all if 'mean_interaction' in r]
+    if tst_results:
+        fig2, axes2 = plt.subplots(1, len(tst_results), figsize=(8*len(tst_results), 5))
+        if len(tst_results) == 1:
+            axes2 = [axes2]
+        fig2.suptitle(
+            'Testing Phase: Task × Condition Interaction\n'
+            '(MotorTest_diff − PerceptualTest_diff, where diff = RegH − RandL)',
+            fontsize=11, fontweight='bold')
+        x = np.array([0, 1])
+        W = 0.35
+        for ax, res in zip(axes2, tst_results):
+            # 左右兩群：MotorTest 跟 PerceptualTest 各自的 RegH/RandL
+            ax.bar(x[0]-W/2, res['motor_regh'], width=W, color=C_REG, label='Regular High', zorder=3)
+            ax.bar(x[0]+W/2, res['motor_rand'], width=W, color=C_RND, label='Random Low',   zorder=3)
+            ax.bar(x[1]-W/2, res['perc_regh'],  width=W, color=C_REG, zorder=3)
+            ax.bar(x[1]+W/2, res['perc_rand'],  width=W, color=C_RND, zorder=3)
+            ax.axhline(0, color='black', linewidth=0.8)
+            # 連線顯示交互作用
+            ax.plot([x[0]-W/2, x[1]-W/2],
+                    [res['motor_regh'], res['perc_regh']],
+                    'o--', color=C_REG, linewidth=1.5, zorder=4)
+            ax.plot([x[0]+W/2, x[1]+W/2],
+                    [res['motor_rand'], res['perc_rand']],
+                    's--', color=C_RND, linewidth=1.5, zorder=4)
+            ax.set_xticks(x)
+            ax.set_xticklabels(['Motor Test', 'Perceptual Test'])
             ax.set_ylabel('ERSP (dB)')
-        ax.set_title(panel['title'], fontsize=10)
+            ax.set_title(res['label'].replace('Testing | ', ''), fontsize=9)
+            ax.legend(loc='upper right', fontsize=8)
+            ax.text(0.5, 0.02,
+                    f"Interaction = {res['mean_interaction']:+.4f} dB\n"
+                    f"d_z = {res['d']:+.3f}  N_req = {res['n_required']}  "
+                    f"pwr@N=10 = {res['power_at_pilot']:.3f}",
+                    transform=ax.transAxes, ha='center', va='bottom', fontsize=9,
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        fig2.tight_layout()
+        fig2.savefig('gpower_testing_interaction.png', dpi=150, bbox_inches='tight')
+        print("  ✓ Figure 2 saved → gpower_testing_interaction.png")
 
-        # ── d-value 標註（x 軸下方）─────────────────────────────
-        # tick_params pad 讓 x 刻度標籤下移，騰出標註空間
-        ax.tick_params(axis='x', pad=26)
-        for i, (lbl, col) in enumerate(ann):
-            r = items[i]
-            if r is None:
-                continue
-            d = d_vals[i]
-            if col is None:   # 動態決定（Alpha 預期顯著條件）
-                col = C_GOOD if (d * exp_dir) > 0 else C_BAD
-            # transform: x=data coords, y=axis fraction (0=bottom,1=top)
-            ax.text(x[i], -0.20,
-                    f'd = {d:+.3f}  {lbl}',
-                    transform=ax.get_xaxis_transform(),
-                    ha='center', va='top',
-                    fontsize=8.5, color=col, fontweight='bold')
-
-    # Legend — placed inside the right panel (upper area is blank for Alpha)
-    axes[1].legend(
-        handles=[
-            mpatches.Patch(color=C_REG, label='regular_high'),
-            mpatches.Patch(color=C_RND, label='random_low'),
-        ],
-        loc='upper right', frameon=True, framealpha=0.9,
-        fontsize=9, edgecolor='lightgray'
-    )
-    fig1.tight_layout()
-
-    out1 = 'gpower_ersp_bars.png'
-    fig1.savefig(out1, dpi=150, bbox_inches='tight')
-    print(f"\n  ✓ Figure 1 saved → {out1}")
-
-    # ════════════════════════════════════════════════════════════
-    # Figure 2：Cohen's d + 統計力彙整
-    # ════════════════════════════════════════════════════════════
-    ORDER = [
-        ('Lrn · Motor θ',        th_lrn, 'learning',    'theta'),
-        ('Lrn · Percept α',      al_lrn, 'learning',    'alpha'),
-        ('MtrTest · Motor θ ★',  th_mtr, 'significant', 'theta'),
-        ('PrcTest · Percept α ★', al_prc, 'significant', 'alpha'),
-        ('MtrTest · Percept α ○', al_mtr, 'absent',      'alpha'),
-        ('PrcTest · Motor θ ○',   th_prc, 'absent',      'theta'),
-    ]
-
-    slabels, d_all, pwr_all, nreq_all = [], [], [], []
-    c_d, c_p = [], []
-    for slbl, res, exp, band in ORDER:
-        if res is None:
-            continue
-        d   = res['d']
-        pwr = res['power_at_pilot']
-        slabels.append(slbl)
-        d_all.append(d)
-        pwr_all.append(pwr)
-        nreq_all.append(res['n_required'])
-
-        if exp == 'learning':
-            c_d.append(C_NEUT); c_p.append(C_NEUT)
-        elif exp == 'significant':
-            correct = (band == 'theta' and d < 0) or (band == 'alpha' and d > 0)
-            c_d.append(C_GOOD if correct else C_BAD)
-            c_p.append(C_GOOD if pwr >= 0.50 else C_BAD)
-        else:   # absent
-            c_d.append(C_WARN if abs(d) > 0.20 else C_NEUT)
-            c_p.append(C_WARN)
-
-    yp   = np.arange(len(slabels))
-    fig2, (axd, axp) = plt.subplots(1, 2, figsize=(14, 5))
-    fig2.suptitle(
-        "G*Power Summary  (one-tailed, \u03b1=0.05, target power=0.80)",
-        fontsize=11, fontweight='bold'
-    )
-
-    # ── Cohen's d 水平長條 ────────────────────────────────────
-    axd.barh(yp, d_all, color=c_d, height=0.5, zorder=3)
-    axd.axvline(0,    color='black', linewidth=0.8, zorder=2)
-    axd.axvline(-0.5, color='gray',  linewidth=0.7, linestyle='--',
-                alpha=0.6, label='|d| = 0.5 (medium)')
-    axd.axvline( 0.5, color='gray',  linewidth=0.7, linestyle='--', alpha=0.6)
-    axd.set_yticks(yp)
-    axd.set_yticklabels(slabels)
-    axd.set_xlabel("Cohen's d  (regular_high − random_low)")
-    axd.set_title("Effect size (Cohen's d)", fontsize=10)
-    axd.set_xlim(-1.15, 1.15)
-    axd.legend(frameon=False, fontsize=8, loc='lower right')
-    for i, dv in enumerate(d_all):
-        xoff = 0.04 if dv >= 0 else -0.04
-        ha   = 'left'  if dv >= 0 else 'right'
-        axd.text(dv + xoff, i, f'{dv:+.3f}', va='center', ha=ha, fontsize=8.5)
-
-    # ── 統計力水平長條 ────────────────────────────────────────
-    axp.barh(yp, pwr_all, color=c_p, height=0.5, zorder=3)
-    axp.axvline(0.80, color='#E24B4A', linewidth=1.5, linestyle='--',
-                label='target power = 0.80', zorder=4)
-    axp.set_yticks(yp)
-    axp.set_yticklabels(slabels)
-    axp.set_xlabel('Statistical Power @ pilot N')
-    axp.set_title('Statistical power (pilot N = 10)', fontsize=10)
-    axp.set_xlim(0, 1.05)
-    axp.legend(frameon=False, fontsize=9)
-    for i, (pv, nreq) in enumerate(zip(pwr_all, nreq_all)):
-        axp.text(pv + 0.02, i,
-                 f'{pv:.3f}   (N req = {nreq})',
-                 va='center', ha='left', fontsize=8.5)
-
-    fig2.tight_layout()
-    out2 = 'gpower_summary.png'
-    fig2.savefig(out2, dpi=150, bbox_inches='tight')
-    print(f"  ✓ Figure 2 saved → {out2}")
-    plt.show()
+    try:
+        plt.show()
+    except Exception:
+        pass
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -601,27 +674,36 @@ if __name__ == '__main__':
 
     all_results = []
 
-    # ── 學習階段 ───────────────────────────────────────────────
+    # ── 學習階段：回歸斜率（model changes across blocks）─────
     print("━"*72)
-    print("【學習階段】  Block7-11 ~ Block22-26（四個 block 組平均）")
+    print("【學習階段】  Block7-11 ~ Block22-26（線性回歸斜率，模型化跨 block 趨勢）")
+    print("  ★ 每位受試者用 block 序號（1~4）回歸 RegH-RandL ERSP 差值，取斜率")
     print("━"*72)
+    learning_results = []
     for cfg in LEARNING_CONFIGS:
-        vl, vr = run_learning(cfg)
-        res = print_row(cfg['label'], vl, vr, ALPHA, POWER_TARGET)
+        slopes, per_sub_diffs, per_sub_means = run_learning(cfg)
+        res = print_learning_slope_row(cfg['label'], slopes, per_sub_diffs, ALPHA, POWER_TARGET)
+        learning_results.append(res)
         all_results.append(res)
 
-    # ── 測驗階段 ───────────────────────────────────────────────
+    # ── 測驗階段：Task × Condition 交互作用 ───────────────────
     print("━"*72)
-    print("【測驗階段】  AllBlocks")
+    print("【測驗階段】  Task × Condition 交互作用  (Motor − Perceptual) × (RegH − RandL)")
+    print("  ★ G*Power 應基於此交互作用的 d_z，而非 Motor Test 或 Perceptual Test 各自的 d")
     print("━"*72)
-    for cfg in TESTING_CONFIGS:
-        vl, vr = run_testing(cfg)
-        res = print_row(cfg['label'], vl, vr, ALPHA, POWER_TARGET,
-                        expected=cfg['expected'])
+    testing_results = []
+    for cfg in TESTING_NEURAL_CONFIGS:
+        (interactions,
+         motor_regh, motor_rand,
+         perc_regh,  perc_rand) = run_testing_interaction(cfg)
+        res = print_interaction_row(cfg, interactions,
+                                    motor_regh, motor_rand,
+                                    perc_regh,  perc_rand)
+        testing_results.append(res)
         all_results.append(res)
 
     # ── 彙整表格 ───────────────────────────────────────────────
     print_summary_table(all_results)
 
     # ── 視覺化 ─────────────────────────────────────────────────
-    plot_results(all_results)
+    plot_results(all_results, testing_results, learning_results)

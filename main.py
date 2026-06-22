@@ -1547,10 +1547,16 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                     'Motor_Parietal':       ['P3', 'Pz', 'P4'],
                     'Motor_Occipital':      ['O1', 'Oz', 'O2'],
                     'Perceptual':           ['O1', 'Oz', 'O2', 'P3', 'Pz', 'P4'],
-                    'Perceptual_Parietal':  ['P3', 'Pz', 'P4'],
-                    'Perceptual_Occipital': ['O1', 'Oz', 'O2'],
+                    # Bug 修正：原本順序是 Parietal,Occipital,Frontal,Central，
+                    # 跟上面 Motor_* 的 Frontal,Central,Parietal,Occipital 順序不一致。
+                    # 下面 zip(_learn_motor_rois, _learn_perc_rois) 是按「字典順序的位置」
+                    # 配對，順序不一致會導致 Motor_Frontal 被錯配到 Perceptual_Parietal、
+                    # Motor_Central 配到 Perceptual_Occipital 等，全部子區域配對都錯。
+                    # 改成跟 Motor_* 同樣順序，才能讓 Frontal 配 Frontal、Central 配 Central。
                     'Perceptual_Frontal':   ['Fz', 'FCz'],
                     'Perceptual_Central':   ['Cz', 'C3', 'C4'],
+                    'Perceptual_Parietal':  ['P3', 'Pz', 'P4'],
+                    'Perceptual_Occipital': ['O1', 'Oz', 'O2'],
                 }
 
                 # ────────────────────────────────────────────────────────────
@@ -1815,6 +1821,16 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                                         how='inner')
                     if 'phase' not in joined.columns and 'phase_eeg' in joined.columns:
                         joined['phase'] = joined['phase_eeg']
+                    # Bug 5 修正：Bug 4 的正規化會把 trial_type 從
+                    # 'regular_high'/'random_high'/'random_low' 攤平成只剩 'high'/'low'，
+                    # 導致 regular_high 與 random_high 被混在一起，下游無法做
+                    # Regular_High vs Random_Low 的核心比較（R 端 compute_eeg_corr_matrix
+                    # 與 Shiny EEG-行為整合 tab 皆受影響）。
+                    # 修法：在正規化「之前」先把完整三分類存進新欄位 condition，
+                    # 保留給需要精細分類的分析使用；trial_type/frequency_category
+                    # 仍維持原本的 high/low 正規化，不影響既有下游函式
+                    # （_plot_dir1_18 等皆依賴 trial_type == 'high'/'low'）。
+                    joined['condition'] = joined['trial_type']  # regular_high / random_high / random_low
                     # Bug 4 修正：正規化 trial_type 和 frequency_category 為 'high'/'low'
                     # trial_type    → Python 繪圖函式使用
                     # frequency_category → Shiny pivot_wider 使用
@@ -1828,6 +1844,7 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                         )
                     print(f"  ✓ Join: {len(joined)} rows, {joined['sid'].nunique()} 受試者")
                     print(f"  trial_type 正規化後: {sorted(joined['trial_type'].unique())}")
+                    print(f"  condition（完整三分類，供精細分析用）: {sorted(joined['condition'].unique())}")
                     return joined
 
                 # ────────────────────────────────────────────────────────────
@@ -2485,13 +2502,19 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                 _ts_rows_cross  = []
                 _ts_rows_single = []
                 _ts_prefix = 'Response' if lock_type_18 == 'response' else 'Stimulus'
+                # Bug 修正：原本只處理 regular_high/random_high，且 _ts_data 的 key
+                # 沒有 trial_type，導致 regular_high 與 random_high 互相覆蓋，
+                # random_low 完全沒被納入。現在改為三條件獨立保存，並把 condition
+                # 隨資料一起輸出到 CSV，供 R 端 Shiny 時間序列相關分頁的三組比較
+                # 分面顯示使用（對應 _join_18 的 condition 欄位修正）。
+                _CONDITIONS_18 = ('regular_high', 'random_high', 'random_low')
 
                 for _ts_bname, _ts_flo, _ts_fhi in _ts_bands:
                     print(f"\n  處理 {_ts_bname}...")
-                    # key: (sid, phase_group, block_group) → {roi: power_time_array}
+                    # key: (sid, roi, phase_group, block_group, condition) → power_time_array
                     # phase_group: 'Learning', 'MotorTest', 'PerceptualTest'
-                    # 跨受試者相關：同一 phase_group 內，Motor ROI vs Perceptual ROI
-                    _ts_data = {}   # (sid, roi, phase_group, bg) → power_time_array
+                    # 跨受試者相關：同一 phase_group、同一 condition 內，Motor ROI vs Perceptual ROI
+                    _ts_data = {}   # (sid, roi, phase_group, bg, condition) → power_time_array
                     _times_ref = None
 
                     for _fp in sorted(Path(h5_dir_18).glob(f'*_{_ts_prefix}_*.h5')):
@@ -2506,8 +2529,8 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                             _sid18 = '_'.join(_parts[:-5])
                             if _parts[-5] != _ts_prefix or _sid18 not in subject_ids_18:
                                 continue
-                            # 只處理 high 試次（regular_high + random_high）
-                            if _tt18 not in ('regular_high', 'random_high'):
+                            # 處理三條件（regular_high / random_high / random_low）
+                            if _tt18 not in _CONDITIONS_18:
                                 continue
                             # Testing：只用 AllBlocks 避免同一受試者重複
                             if _ph18 in ('MotorTest', 'PerceptualTest') and _bg18 != 'AllBlocks':
@@ -2540,11 +2563,12 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                             _ridx18 = [_cnu18.index(c.upper()) for c in _rch18 if c.upper() in _cnu18]
                             if not _ridx18: continue
                             _power_t = _tfr18.data[_ridx18].mean(axis=0)[_fm18].mean(axis=0)
-                            _ts_data[(_sid18, _rn18, _ph18, _bg18)] = _power_t
+                            _ts_data[(_sid18, _rn18, _ph18, _bg18, _tt18)] = _power_t
                             # 單一受試者模式用
                             _ts_rows_single.append({
                                 'sid': _sid18, 'roi': _rn18, 'phase': _ph18,
                                 'band': _ts_bname, 'block_group': _bg18,
+                                'condition': _tt18,
                                 'tasktype': 'motor' if _is_motor else ('perceptual' if _is_perc else 'learning'),
                                 'times': list(_times18),
                                 'power': list(_power_t)
@@ -2562,28 +2586,30 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                         k[3] for k in _ts_data if k[2] == 'Learning'
                     ))
                     for _bg in _learn_bgs:
-                        for _mr, _pr in zip(_learn_motor_rois, _learn_perc_rois):
-                            _m_vecs = [_ts_data.get((s, _mr, 'Learning', _bg))
-                                       for s in subject_ids_18
-                                       if (s, _mr, 'Learning', _bg) in _ts_data]
-                            _p_vecs = [_ts_data.get((s, _pr, 'Learning', _bg))
-                                       for s in subject_ids_18
-                                       if (s, _pr, 'Learning', _bg) in _ts_data]
-                            if len(_m_vecs) < 3 or len(_m_vecs) != len(_p_vecs): continue
-                            _m_mat = np.array(_m_vecs)
-                            _p_mat = np.array(_p_vecs)
-                            if _m_mat.shape != _p_mat.shape: continue
-                            _n18 = _m_mat.shape[0]
-                            for _ti, _t in enumerate(_times_ref):
-                                _r18, _p18 = _sp18(_m_mat[:, _ti], _p_mat[:, _ti])
-                                _se18 = (1 - float(_r18)**2) / np.sqrt(max(_n18-2, 1))
-                                _ts_rows_cross.append({
-                                    'motor_roi': _mr, 'perceptual_roi': _pr,
-                                    'phase': 'Learning', 'block_group': _bg,
-                                    'band': _ts_bname, 'time': float(_t),
-                                    'r_cross': float(_r18), 'p_cross': float(_p18),
-                                    'se_cross': float(_se18), 'sid_n': _n18
-                                })
+                        for _cond18 in _CONDITIONS_18:
+                            for _mr, _pr in zip(_learn_motor_rois, _learn_perc_rois):
+                                _m_vecs = [_ts_data.get((s, _mr, 'Learning', _bg, _cond18))
+                                           for s in subject_ids_18
+                                           if (s, _mr, 'Learning', _bg, _cond18) in _ts_data]
+                                _p_vecs = [_ts_data.get((s, _pr, 'Learning', _bg, _cond18))
+                                           for s in subject_ids_18
+                                           if (s, _pr, 'Learning', _bg, _cond18) in _ts_data]
+                                if len(_m_vecs) < 3 or len(_m_vecs) != len(_p_vecs): continue
+                                _m_mat = np.array(_m_vecs)
+                                _p_mat = np.array(_p_vecs)
+                                if _m_mat.shape != _p_mat.shape: continue
+                                _n18 = _m_mat.shape[0]
+                                for _ti, _t in enumerate(_times_ref):
+                                    _r18, _p18 = _sp18(_m_mat[:, _ti], _p_mat[:, _ti])
+                                    _se18 = (1 - float(_r18)**2) / np.sqrt(max(_n18-2, 1))
+                                    _ts_rows_cross.append({
+                                        'motor_roi': _mr, 'perceptual_roi': _pr,
+                                        'phase': 'Learning', 'block_group': _bg,
+                                        'condition': _cond18,
+                                        'band': _ts_bname, 'time': float(_t),
+                                        'r_cross': float(_r18), 'p_cross': float(_p18),
+                                        'se_cross': float(_se18), 'sid_n': _n18
+                                    })
 
                     # === Testing phase 跨受試者相關
                     # 分為三種：
@@ -2595,30 +2621,32 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                         ('PerceptualTest',  'PerceptualTest', 'PerceptualTest'),
                         ('Testing',         'MotorTest',      'PerceptualTest'),
                     ]:
-                        for _mr, _pr in zip(_learn_motor_rois, _learn_perc_rois):
-                            _m_vecs = [_ts_data.get((s, _mr, _motor_ph, 'AllBlocks'))
-                                       for s in subject_ids_18
-                                       if (s, _mr, _motor_ph, 'AllBlocks') in _ts_data]
-                            _p_vecs = [_ts_data.get((s, _pr, _percept_ph, 'AllBlocks'))
-                                       for s in subject_ids_18
-                                       if (s, _pr, _percept_ph, 'AllBlocks') in _ts_data]
-                            if len(_m_vecs) < 3 or len(_m_vecs) != len(_p_vecs):
-                                continue
-                            _m_mat = np.array(_m_vecs)
-                            _p_mat = np.array(_p_vecs)
-                            if _m_mat.shape != _p_mat.shape:
-                                continue
-                            _n18 = _m_mat.shape[0]
-                            for _ti, _t in enumerate(_times_ref):
-                                _r18, _p18 = _sp18(_m_mat[:, _ti], _p_mat[:, _ti])
-                                _se18 = (1 - float(_r18)**2) / np.sqrt(max(_n18-2, 1))
-                                _ts_rows_cross.append({
-                                    'motor_roi': _mr, 'perceptual_roi': _pr,
-                                    'phase': _phase_label, 'block_group': 'AllBlocks',
-                                    'band': _ts_bname, 'time': float(_t),
-                                    'r_cross': float(_r18), 'p_cross': float(_p18),
-                                    'se_cross': float(_se18), 'sid_n': _n18
-                                })
+                        for _cond18 in _CONDITIONS_18:
+                            for _mr, _pr in zip(_learn_motor_rois, _learn_perc_rois):
+                                _m_vecs = [_ts_data.get((s, _mr, _motor_ph, 'AllBlocks', _cond18))
+                                           for s in subject_ids_18
+                                           if (s, _mr, _motor_ph, 'AllBlocks', _cond18) in _ts_data]
+                                _p_vecs = [_ts_data.get((s, _pr, _percept_ph, 'AllBlocks', _cond18))
+                                           for s in subject_ids_18
+                                           if (s, _pr, _percept_ph, 'AllBlocks', _cond18) in _ts_data]
+                                if len(_m_vecs) < 3 or len(_m_vecs) != len(_p_vecs):
+                                    continue
+                                _m_mat = np.array(_m_vecs)
+                                _p_mat = np.array(_p_vecs)
+                                if _m_mat.shape != _p_mat.shape:
+                                    continue
+                                _n18 = _m_mat.shape[0]
+                                for _ti, _t in enumerate(_times_ref):
+                                    _r18, _p18 = _sp18(_m_mat[:, _ti], _p_mat[:, _ti])
+                                    _se18 = (1 - float(_r18)**2) / np.sqrt(max(_n18-2, 1))
+                                    _ts_rows_cross.append({
+                                        'motor_roi': _mr, 'perceptual_roi': _pr,
+                                        'phase': _phase_label, 'block_group': 'AllBlocks',
+                                        'condition': _cond18,
+                                        'band': _ts_bname, 'time': float(_t),
+                                        'r_cross': float(_r18), 'p_cross': float(_p18),
+                                        'se_cross': float(_se18), 'sid_n': _n18
+                                    })
                     print(f"    跨受試者相關列數: {sum(1 for r in _ts_rows_cross if r['band']==_ts_bname)}")
 
                     # 儲存本 band 的跨受試者 CSV（在迴圈內，每個 band 各存一次）
@@ -2638,11 +2666,14 @@ def process_eeg_data(subject_id, subject_data, data_path=None, behavior_df=None)
                                 _flat.append({'sid':_row['sid'],'roi':_row['roi'],
                                               'phase':_row['phase'],'band':_row['band'],
                                               'block_group':_row['block_group'],
+                                              'condition':_row['condition'],
                                               'tasktype':_row['tasktype'],
                                               'time':float(_t),'ersp':float(_pv)})
+                        # Bug 修正：groupby key 加入 condition，避免 regular_high/
+                        # random_high/random_low 三條件的功率被平均混在一起
                         _ts_sw = (
                             pd.DataFrame(_flat)
-                            .groupby(['sid','roi','phase','band','time'], as_index=False)['ersp']
+                            .groupby(['sid','roi','phase','band','condition','time'], as_index=False)['ersp']
                             .mean()
                         )
                         _ts_sp = os.path.join(out_dir_18, f'timeseries_single_sub_{_ts_bname}_{lock_type_18}.csv')
