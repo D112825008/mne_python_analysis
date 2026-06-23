@@ -163,12 +163,31 @@ LEARNING_CONFIGS = [
         time      = (-0.300, 0.050),
     ),
     dict(
-        label     = 'Learning | Stimulus | Perceptual | Alpha ERS',
+        label     = 'Learning | Stimulus | Perceptual | Alpha (post-stim 100-300ms)',
         lock      = 'stimulus',
         roi       = 'Perceptual',
         roi_lower = 'perceptual',
         freq      = (8, 13),
         time      = (0.100, 0.300),
+    ),
+    # ── 新增：pre-stimulus 窗(anticipatory alpha,對應 Bays 2015 的 ERS 階段)──
+    # whole-epoch baseline 下,此窗若為正值=相對整段平均的 ERS(預期隨學習增大)
+    dict(
+        label     = 'Learning | Stimulus | Perceptual | Alpha (PRE-stim -500~-100ms)',
+        lock      = 'stimulus',
+        roi       = 'Perceptual',
+        roi_lower = 'perceptual',
+        freq      = (8, 13),
+        time      = (-0.500, -0.100),
+    ),
+    # ── 可選:對齊 Bays 的刺激處理窗(250-500ms),預期為更深的 ERD ──
+    dict(
+        label     = 'Learning | Stimulus | Perceptual | Alpha (post-stim 250-500ms, Bays)',
+        lock      = 'stimulus',
+        roi       = 'Perceptual',
+        roi_lower = 'perceptual',
+        freq      = (8, 13),
+        time      = (0.250, 0.500),
     ),
 ]
 
@@ -253,15 +272,31 @@ TESTING_NEURAL_CONFIGS = [
         exp_dir  = 'negative',
     ),
     dict(
-        label    = 'Testing | Perceptual ROI | Alpha ERS | Stimulus-locked',
+        label    = 'Testing | Perceptual ROI | Alpha (post-stim 100-300ms) | Stimulus-locked',
         lock     = 'stimulus',
         roi      = 'Perceptual',
         freq     = (8, 13),
         time     = (0.100, 0.300),
-        # 預期方向：Perceptual Test 的 RegH-RandL 差值（正值=ERS）
-        # 應該大於 Motor Test 的對應差值
-        # → interaction = motor_diff - percept_diff 預期為負（或 percept>motor 為正）
-        # 這裡定義為 percept_diff - motor_diff，使預期方向一致為正
+        exp_dir  = 'positive',
+    ),
+    # ── 新增:pre-stimulus 窗(Bays 2015 的 anticipatory ERS 階段)──
+    # 與上面同一批檔案、同一套交互作用邏輯,只換時間窗。
+    # 若 pre-stim 為 ERS(正)而 post-stim 為 ERD(負),即吻合 Bays 兩階段模型。
+    dict(
+        label    = 'Testing | Perceptual ROI | Alpha (PRE-stim -500~-100ms) | Stimulus-locked',
+        lock     = 'stimulus',
+        roi      = 'Perceptual',
+        freq     = (8, 13),
+        time     = (-0.500, -0.100),
+        exp_dir  = 'positive',
+    ),
+    # ── 可選:對齊 Bays 的刺激處理窗(250-500ms),預期更深 ERD ──
+    dict(
+        label    = 'Testing | Perceptual ROI | Alpha (post-stim 250-500ms, Bays) | Stimulus-locked',
+        lock     = 'stimulus',
+        roi      = 'Perceptual',
+        freq     = (8, 13),
+        time     = (0.250, 0.500),
         exp_dir  = 'positive',
     ),
 ]
